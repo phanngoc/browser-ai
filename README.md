@@ -27,6 +27,27 @@ Use your own Chrome (profile, cookies, logins) — see [docs/ATTACH.md](docs/ATT
 go run ./cmd/agent --attach auto --url … --goal …
 ```
 
+### No TypeSafe key yet? `--chooser llm`
+
+When `TYPESAFE_API_KEY` is empty the agent falls back to `internal/llmchooser`: a general chat
+model (default `google/gemini-2.5-flash-lite` via the `TEXT_MODEL_*` credentials, override with
+`CHOOSER_MODEL` / `--chooser-model`) picks the operation and target from the **same** indexed
+action space, and its answer is validated the same way — only offered indices can execute. It is
+the same loop, just a slower decision maker: ~1.4 s per decision instead of Jev's ~0.17 s.
+
+Real run, Wikipedia → Gödel's incompleteness theorems, headless, LLM chooser:
+
+```
+  1  TYPE_TEXT  [2] Search Wikipedia                snap    8  model  853  text  766  act  70  settle   32  total  1827  text="Gödel's incompleteness theorems"
+  2  CLICK      [4] Gödel's incompleteness theorem…  snap   55  model 2249  text    -  act  20  settle  561  total  3296
+DONE     2 steps · 4 decisions (1 stale) · 7.548s
+chooser  5.438s total · avg 1.359s/call · 3614 in / 92 out tokens
+text     767ms total · avg 767ms/call · 1 calls
+browser  snapshot 64ms · act 91ms · settle 594ms · 63 CDP calls
+```
+
+72 % of the wall time is the LLM deciding. The browser side is 0.75 s including a real page load.
+
 Output, one line per executed action, then a summary:
 
 ```
@@ -56,6 +77,8 @@ final    Fixture
 | `--trace run.json` | full trace: steps, every decision with request/answers, timings |
 | `--screenshots dir/` | JPEG after each step, named by elapsed ms |
 | `--max-steps 60` | action budget (model calls capped at 2×) |
+| `--chooser jev\|llm` | decision backend; default `jev` when `TYPESAFE_API_KEY` is set, else `llm` |
+| `--chooser-model` | model for `--chooser llm` |
 | `--quiet` | summary only |
 
 Exit code: `0` done · `2` blocked · `1` error. `DONE` is the model's opinion — verify the final
@@ -70,6 +93,7 @@ TEXT_MODEL_API_KEY=          # required for TYPE_TEXT; any OpenAI-compatible end
 TEXT_MODEL_BASE_URL=https://openrouter.ai/api/v1
 TEXT_MODEL=inception/mercury-2.5
 TEXT_MODEL_REASONING=none
+CHOOSER_MODEL=google/gemini-2.5-flash-lite   # only for --chooser llm
 CHROME_PATH=                 # optional
 ```
 
@@ -120,6 +144,7 @@ internal/chrome  launch (pipe / port=0) and attach (DevToolsActivePort, /json/ve
 internal/snapshot  snapshot.js + typed Page/Action + fingerprint
 internal/browser Observe / Fresh / Act / Screenshot
 internal/jev     action space, questions, TypeSafe client, validation
+internal/llmchooser  fallback decision backend on a general LLM (same action space, same validation)
 internal/textgen OpenAI-compatible helper for TYPE_TEXT
 internal/agent   the loop, history, stale handling, timings
 ```

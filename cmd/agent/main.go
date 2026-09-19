@@ -25,6 +25,7 @@ import (
 	"github.com/phanngoc/browser-ai/internal/cdp"
 	"github.com/phanngoc/browser-ai/internal/chrome"
 	"github.com/phanngoc/browser-ai/internal/jev"
+	"github.com/phanngoc/browser-ai/internal/llmchooser"
 	"github.com/phanngoc/browser-ai/internal/textgen"
 )
 
@@ -39,6 +40,8 @@ func main() {
 	maxSteps := flag.Int("max-steps", 60, "action budget")
 	envFile := flag.String("env", ".env", "env file to load if present")
 	quiet := flag.Bool("quiet", false, "print only the final table")
+	chooserFlag := flag.String("chooser", "", "jev (TypeSafe) or llm (general LLM via TEXT_MODEL_* credentials); default: jev if TYPESAFE_API_KEY is set, else llm")
+	chooserModel := flag.String("chooser-model", "", "model for --chooser llm (default google/gemini-2.5-flash-lite; env CHOOSER_MODEL)")
 	flag.Parse()
 	if *url == "" || *goal == "" {
 		flag.Usage()
@@ -49,20 +52,43 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	jc := jev.New(os.Getenv("TYPESAFE_API_KEY"), os.Getenv("TYPESAFE_MODEL"))
-	if ep := os.Getenv("TYPESAFE_ENDPOINT"); ep != "" {
-		jc.Endpoint = ep
-	}
 	var tc *textgen.Client
 	if key := os.Getenv("TEXT_MODEL_API_KEY"); key != "" {
 		tc = textgen.New(key, os.Getenv("TEXT_MODEL_BASE_URL"), os.Getenv("TEXT_MODEL"), os.Getenv("TEXT_MODEL_REASONING"))
+	}
+	which := *chooserFlag
+	if which == "" {
+		which = "llm"
+		if os.Getenv("TYPESAFE_API_KEY") != "" {
+			which = "jev"
+		}
+	}
+	var chooser agent.Chooser
+	var warmChooser func(context.Context) time.Duration
+	var chooserName string
+	switch which {
+	case "jev":
+		jc := jev.New(os.Getenv("TYPESAFE_API_KEY"), os.Getenv("TYPESAFE_MODEL"))
+		if ep := os.Getenv("TYPESAFE_ENDPOINT"); ep != "" {
+			jc.Endpoint = ep
+		}
+		chooser, warmChooser, chooserName = jc, jc.Warm, "jev "+jc.Model
+	case "llm":
+		model := *chooserModel
+		if model == "" {
+			model = os.Getenv("CHOOSER_MODEL")
+		}
+		lc := llmchooser.New(os.Getenv("TEXT_MODEL_API_KEY"), os.Getenv("TEXT_MODEL_BASE_URL"), model)
+		chooser, warmChooser, chooserName = lc, lc.Warm, "llm "+lc.Model
+	default:
+		fatal(fmt.Errorf("unknown --chooser %q", which))
 	}
 
 	// Warm the model connections while Chrome starts.
 	var wg sync.WaitGroup
 	var warmJev, warmText time.Duration
 	wg.Add(1)
-	go func() { defer wg.Done(); warmJev = jc.Warm(ctx) }()
+	go func() { defer wg.Done(); warmJev = warmChooser(ctx) }()
 	if tc != nil {
 		wg.Add(1)
 		go func() { defer wg.Done(); warmText = tc.Warm(ctx) }()
@@ -86,7 +112,7 @@ func main() {
 	browserReady := time.Since(t0)
 	wg.Wait()
 	if !*quiet {
-		fmt.Printf("browser: %s ready in %s · jev warm %s", mode, browserReady.Round(time.Millisecond), warmJev.Round(time.Millisecond))
+		fmt.Printf("browser: %s ready in %s · chooser %s warm %s", mode, browserReady.Round(time.Millisecond), chooserName, warmJev.Round(time.Millisecond))
 		if tc != nil {
 			fmt.Printf(" · text warm %s", warmText.Round(time.Millisecond))
 		}
@@ -98,7 +124,7 @@ func main() {
 		textGen = tc
 	}
 	out := bufio.NewWriter(os.Stdout)
-	a := agent.New(br, jc, textGen, agent.Options{
+	a := agent.New(br, chooser, textGen, agent.Options{
 		Goal: *goal, MaxSteps: *maxSteps, Screenshots: *shots != "", KeepRequest: *trace != "",
 		OnStep: func(s agent.Step) {
 			if !*quiet {
@@ -207,7 +233,7 @@ func printTable(r *agent.Result) {
 		}
 		return (d / time.Duration(n)).Round(time.Millisecond).String()
 	}
-	fmt.Printf("jev      %s total · avg %s/call · %d in / %d out tokens\n", modelTotal.Round(time.Millisecond), avg(modelTotal, len(r.Decisions)), in, outTok)
+	fmt.Printf("chooser  %s total · avg %s/call · %d in / %d out tokens\n", modelTotal.Round(time.Millisecond), avg(modelTotal, len(r.Decisions)), in, outTok)
 	if texts > 0 {
 		fmt.Printf("text     %s total · avg %s/call · %d calls · %d in / %d out tokens\n", sum.Text.Round(time.Millisecond), avg(sum.Text, texts), texts, tin, tout)
 	}

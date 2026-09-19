@@ -114,7 +114,7 @@ func BuildRequest(model string, page *snapshot.Page, goal string, history []Rece
 
 	questions := map[string]any{
 		"operation": choiceQuestion{Type: "choice", Criteria: operations,
-			Instructions: map[string]any{"goal": goal, "rules": nextAction}},
+			Instructions: map[string]any{"goal": goal, "rules": NextActionRules}},
 	}
 	for op, candidates := range sp.Targets {
 		criteria := map[string]any{}
@@ -140,7 +140,7 @@ func BuildRequest(model string, page *snapshot.Page, goal string, history []Rece
 			criteria[index] = crit
 		}
 		questions[strings.ToLower(op)+"_target"] = choiceQuestion{Type: "choice", Criteria: criteria,
-			Instructions: map[string]any{"goal": goal, "operation": op, "rules": []string{nextAction, targetRule}}}
+			Instructions: map[string]any{"goal": goal, "operation": op, "rules": []string{NextActionRules, TargetRules}}}
 	}
 	if len(history) > 10 {
 		history = history[len(history)-10:]
