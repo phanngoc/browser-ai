@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Fixture</title>
+<style>body{font-family:sans-serif;padding:20px;margin:0} form>*{display:block;margin:6px 0} .tall{height:2000px}</style>
+</head>
+<body>
+<h1>Fixture page</h1>
+<form id="f">
+  <label for="name">Name</label>
+  <input id="name" type="text" value="old value">
+  <input type="search" placeholder="Search here">
+  <textarea aria-label="Notes"></textarea>
+  <div id="rich" contenteditable="true" aria-label="Rich"></div>
+  <label><input type="checkbox" id="agree"> Agree to terms</label>
+  <label><input type="radio" name="r" value="a" checked> Option A</label>
+  <label><input type="radio" name="r" value="b"> Option B</label>
+  <label for="color">Color</label>
+  <select id="color">
+    <option value="red">Red</option>
+    <option value="green" selected>Green</option>
+    <optgroup label="Off" disabled><option value="x">X</option></optgroup>
+    <option value="blue" disabled>Blue</option>
+  </select>
+  <input type="password" placeholder="Secret">
+  <input type="file">
+  <input type="hidden" value="h">
+  <input type="text" placeholder="Disabled field" disabled>
+  <input type="text" placeholder="Readonly field" readonly value="ro">
+  <div aria-hidden="true"><button type="button">Hidden button</button></div>
+  <button type="submit" id="submit">Submit</button>
+  <a href="/page2">Go to page 2</a>
+</form>
+<div>
+  <label for="city">City</label>
+  <input id="city" role="combobox" aria-controls="city-list" aria-expanded="false" autocomplete="off">
+  <ul id="city-list" role="listbox" hidden></ul>
+</div>
+<div id="overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3)"></div>
+<p id="footer">Footer text v1</p>
+<div class="tall"></div>
+<script>
+  const city=document.getElementById('city'), list=document.getElementById('city-list');
+  city.addEventListener('input',()=>{
+    list.hidden=true; list.innerHTML='';
+    setTimeout(()=>{
+      for (const c of ['Zurich','Zug']) { const li=document.createElement('li'); li.setAttribute('role','option'); li.textContent=c; list.appendChild(li); }
+      list.hidden=false; city.setAttribute('aria-expanded','true');
+    },100);
+  });
+  document.getElementById('color').addEventListener('change',e=>{ window.__changed=e.target.value; });
+  document.getElementById('f').addEventListener('submit',e=>{ e.preventDefault(); window.__submitted=true; });
+</script>
+</body></html>
