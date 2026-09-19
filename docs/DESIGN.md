@@ -34,20 +34,32 @@ Reference tham khảo: `browser-use/jev-ultrafast` (Python, MIT). Không dùng c
 
 ```
 cmd/
-  agent/      CLI: --url --goal [--headless] [--attach ws://…] [--trace out.json]
+  agent/      CLI: --url --goal [--headless | --attach [ws://host:port]] [--trace out.json]
   bench/      đo RTT CDP thô, Runtime.evaluate, snapshot — KHÔNG cần API key
 internal/
   ws/         RFC 6455 client tối giản (handshake, mask, frame, ping/pong, fragment)
   cdp/        Transport interface {Send,Recv}; Conn: id↔reply correlation, flat sessions,
               event fan-out theo sessionId, ctx timeout. Không codegen, params là map/struct.
-  chrome/     Launch Chrome: --remote-debugging-pipe (fd 3/4, \0-delimited) hoặc
-              --remote-debugging-port=0 + DevToolsActivePort; temp profile; kill on exit
+  chrome/     Launch: --remote-debugging-pipe (fd 3/4, \0-delimited), temp profile, kill on exit
+              Attach: Chrome thật đang chạy — dò DevToolsActivePort trong profile dir hoặc
+              /json/version; tự bật `chrome://inspect` remote-debugging nếu chưa mở port;
+              tạo tab riêng (Target.createTarget background:true), không đụng tab của user
   snapshot/   snapshot.js (go:embed) + struct Page/Action/Guard; fingerprint sha256
   browser/    Browser{Observe, Fresh, Act}: click/fill/select/scroll/wait, settle sau input
   jev/        build questions từ actions (action_space), POST, validate answer chặt
   textgen/    helper OpenAI-compatible cho TYPE_TEXT, JSON {"text": ...} only
   agent/      loop observe → choose → act; history, stale-retry, budget; Timing per phase
 ```
+
+### 2.0 Attach Chrome thật (first-class, không phải tuỳ chọn phụ)
+
+Chrome ≥ 136 không cho `--remote-debugging-port` trên profile mặc định; đường đi:
+1. Nếu Chrome đang chạy **đã** mở DevTools port → đọc `~/Library/Application Support/Google/Chrome/DevToolsActivePort`
+   (dòng 1 port, dòng 2 path ws) → nối WebSocket browser endpoint.
+2. Nếu chưa → hướng dẫn user bật *Allow remote debugging* tại `chrome://inspect/#remote-debugging`
+   (Chrome 144+), hoặc `--attach ws://127.0.0.1:9222` khi user tự khởi động Chrome với port.
+3. Luôn `Target.createTarget(about:blank, background:true)` + `Emulation.setFocusEmulationEnabled`
+   → tab của agent render bình thường dù không phải tab đang nhìn; đóng tab khi xong.
 
 Dependency graph một chiều: `agent → browser,jev,textgen → cdp,snapshot → ws/chrome`.
 
@@ -56,7 +68,7 @@ Dependency graph một chiều: `agent → browser,jev,textgen → cdp,snapshot 
 | | pipe (`--remote-debugging-pipe`) | websocket |
 |---|---|---|
 | Overhead | 0 framing, không TCP | HTTP upgrade + frame/mask |
-| Dùng khi | mình launch Chrome (mặc định) | `--attach` vào Chrome đang chạy (profile thật, đã login) |
+| Dùng khi | mình launch Chrome (`--headless`/mặc định) | `--attach` Chrome thật đang chạy (profile, cookie, đã login) |
 | Implement | `os/exec` + `ExtraFiles`, đọc tới `\0` | tự viết `internal/ws` ~200 dòng |
 
 ### 2.2 CDP client
@@ -139,10 +151,10 @@ CHROME_PATH=             # mặc định dò /Applications/Google Chrome.app
 
 | # | Việc | Kiểm chứng |
 |---|---|---|
-| M1 | `ws`, `cdp`, `chrome`, `cmd/bench` | RTT µs/ms in ra, pipe vs ws |
+| M1 | `ws`, `cdp`, `chrome` (launch **và** attach), `cmd/bench` | RTT in ra, pipe vs ws; attach được Chrome thật |
 | M2 | `snapshot`, `browser` + fixture HTML local, test guard/stale | `go test`, `check_guards` |
 | M3 | `jev`, `textgen`, `agent`, `cmd/agent` | chạy Wikipedia goal, in bảng timing |
-| M4 | README, `--trace` JSON, screenshot tuỳ chọn | so số với reference (7.1 s Flights) |
+| M4 | README, `--trace` JSON, screenshot tuỳ chọn, benchmark | so số với reference (7.1 s Flights) |
 
 ## 5. Giới hạn kế thừa (MVP)
 
