@@ -213,7 +213,9 @@ type Subscription struct {
 	ch   chan Event
 	key  string
 	conn *Conn
-	once sync.Once
+
+	mu     sync.RWMutex // guards ch against send-after-close
+	closed bool
 }
 
 func subKey(sessionID, method string) string { return sessionID + "\x00" + method }
@@ -255,7 +257,29 @@ func (s *Subscription) Cancel() {
 	s.closeOnce()
 }
 
-func (s *Subscription) closeOnce() { s.once.Do(func() { close(s.ch) }) }
+func (s *Subscription) closeOnce() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed = true
+		close(s.ch)
+	}
+}
+
+// deliver enqueues without blocking; false when full or closed.
+func (s *Subscription) deliver(ev Event) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return false
+	}
+	select {
+	case s.ch <- ev:
+		return true
+	default:
+		return false
+	}
+}
 
 func (c *Conn) dispatch(ev Event) {
 	c.mu.Lock()
@@ -263,9 +287,7 @@ func (c *Conn) dispatch(ev Event) {
 		c.subs[subKey(ev.SessionID, "*")]...)
 	c.mu.Unlock()
 	for _, s := range targets {
-		select {
-		case s.ch <- ev:
-		default:
+		if !s.deliver(ev) {
 			c.drops.Add(1)
 		}
 	}
