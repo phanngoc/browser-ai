@@ -174,8 +174,7 @@ func jsonEqual(a, b json.RawMessage) bool {
 }
 
 // Act executes action against page. text is required for kind "fill".
-func (b *Browser) Act(ctx context.Context, action snapshot.Action, page *snapshot.Page, text string) (Timing, error) {
-	var t Timing
+func (b *Browser) Act(ctx context.Context, action snapshot.Action, page *snapshot.Page, text string) (t Timing, err error) {
 	start := time.Now()
 	defer func() { t.Act = time.Since(start) }()
 	ok, err := b.Fresh(ctx, page, &action)
