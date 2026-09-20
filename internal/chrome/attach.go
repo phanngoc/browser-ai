@@ -93,19 +93,27 @@ func Discover(ctx context.Context, target string) (wsURL, source string, err err
 	return "", "", ErrNoDebugPort
 }
 
-// probe checks a discovered URL is live (the file may be stale) by asking the
-// HTTP side for /json/version and preferring its URL.
+// probe checks a discovered URL is live (the file may be stale). It asks the
+// HTTP side for /json/version first; Chrome's built-in "Allow remote
+// debugging" (chrome://inspect) serves only the WebSocket, so it falls back
+// to a real handshake on the discovered URL.
 func probe(ctx context.Context, wsURL string) (string, error) {
 	rest := strings.TrimPrefix(wsURL, "ws://")
 	host := rest
 	if i := strings.Index(rest, "/"); i >= 0 {
 		host = rest[:i]
 	}
-	u, err := versionEndpoint(ctx, "http://"+host)
+	if u, err := versionEndpoint(ctx, "http://"+host); err == nil {
+		return u, nil
+	}
+	dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	c, err := ws.Dial(dctx, wsURL)
 	if err != nil {
 		return "", err
 	}
-	return u, nil
+	c.Close()
+	return wsURL, nil
 }
 
 func versionEndpoint(ctx context.Context, base string) (string, error) {
