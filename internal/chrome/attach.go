@@ -58,7 +58,7 @@ func Attach(ctx context.Context, target string) (*Attached, error) {
 			ApprovalHint()
 		}
 	})
-	dctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	c, err := ws.Dial(dctx, wsURL)
 	cancel()
 	hint.Stop()
