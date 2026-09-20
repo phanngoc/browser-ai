@@ -30,20 +30,29 @@ var ErrSelectUnconfirmed = errors.New("browser: dropdown execution was not confi
 // Timing records where browser time went.
 type Timing struct {
 	Settle   time.Duration // post-input wait before the snapshot
-	Snapshot time.Duration // snapshot.js evaluate + decode
+	Snapshot time.Duration // snapshot.js evaluate + decode, including stabilisation re-reads
 	Act      time.Duration // freshness check + input dispatch
+	// Restable counts how many extra snapshots Observe took before the page held still.
+	Restable int
 }
 
 // Options for New.
 type Options struct {
 	Width, Height int
 	LoadTimeout   time.Duration
+	// StableChecks > 0 makes Observe re-read the page (after two animation
+	// frames) until two consecutive markers agree, at most this many times.
+	// Measured neutral on Wikipedia and negative on Google Flights (the page
+	// changes during the model call, not in the frames after the snapshot),
+	// so it is off by default. See docs/BENCH.md.
+	StableChecks int
 }
 
 // Browser owns one page target.
 type Browser struct {
-	sess       *cdp.Session
-	afterInput *snapshot.Action
+	sess         *cdp.Session
+	afterInput   *snapshot.Action
+	stableChecks int
 }
 
 // New opens a background tab, applies viewport/focus emulation, navigates and
@@ -63,7 +72,7 @@ func New(ctx context.Context, conn *cdp.Conn, url string, opts Options) (*Browse
 	if err != nil {
 		return nil, err
 	}
-	b := &Browser{sess: sess}
+	b := &Browser{sess: sess, stableChecks: opts.StableChecks}
 	if _, err := sess.Call(ctx, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width": w, "height": h, "deviceScaleFactor": 1, "mobile": false}); err != nil {
 		b.Close(ctx)
@@ -123,16 +132,50 @@ func (b *Browser) Observe(ctx context.Context) (*snapshot.Page, Timing, error) {
 		if err != nil {
 			return nil, t, err
 		}
+		p, t.Restable, err = b.stabilize(ctx, p)
+		if err != nil {
+			return nil, t, err
+		}
 		t.Snapshot = time.Since(start)
 		return p, t, nil
 	}
 }
 
-// Fresh reports whether page still describes the live document. For click and
-// select actions only the target's guard and the page key are compared, so
-// unrelated animation does not force a new decision.
+// twoFrames resolves after two animation frames, or 50 ms if frames stall.
+const twoFrames = `new Promise(r => { setTimeout(r, 50); requestAnimationFrame(() => requestAnimationFrame(r)); })`
+
+// stabilize re-reads the page until two consecutive markers agree, so a
+// decision is not made on a page that is still rendering. Bounded: on a page
+// that never holds still it returns the latest read after stableChecks tries.
+func (b *Browser) stabilize(ctx context.Context, p *snapshot.Page) (*snapshot.Page, int, error) {
+	for i := 0; i < b.stableChecks; i++ {
+		if _, err := b.sess.Evaluate(ctx, twoFrames, true); err != nil && ignoreException(err) != nil {
+			return nil, i, err
+		}
+		raw, err := b.sess.Evaluate(ctx, snapshot.Expr, false)
+		if err != nil || len(raw) == 0 || string(raw) == "null" {
+			// Navigating: hand back what we have; the next Fresh check catches it.
+			return p, i, ignoreException(err)
+		}
+		next, err := snapshot.Decode(raw)
+		if err != nil {
+			return nil, i, err
+		}
+		if jsonEqual(next.Marker, p.Marker) {
+			return next, i, nil
+		}
+		p = next
+	}
+	return p, b.stableChecks, nil
+}
+
+// Fresh reports whether page still describes the live document. For click,
+// fill and select actions only the target's guard and the page key are
+// compared, so unrelated animation (an autocomplete list refreshing, a panel
+// rendering late) does not force a new decision. Without an action the full
+// semantic marker is compared.
 func (b *Browser) Fresh(ctx context.Context, page *snapshot.Page, action *snapshot.Action) (bool, error) {
-	if action != nil && (action.Kind == "click" || action.Kind == "select") {
+	if action != nil && (action.Kind == "click" || action.Kind == "select" || action.Kind == "fill") {
 		if action.Node <= 0 {
 			return false, nil
 		}
@@ -177,6 +220,16 @@ func jsonEqual(a, b json.RawMessage) bool {
 func (b *Browser) Act(ctx context.Context, action snapshot.Action, page *snapshot.Page, text string) (t Timing, err error) {
 	start := time.Now()
 	defer func() { t.Act = time.Since(start) }()
+	if action.Kind == "wait" {
+		// A page that changed since the decision is exactly what WAIT was
+		// for; re-deciding would cost a model call for nothing.
+		select {
+		case <-ctx.Done():
+			return t, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+		return t, nil
+	}
 	ok, err := b.Fresh(ctx, page, &action)
 	if err != nil {
 		return t, err
@@ -185,13 +238,6 @@ func (b *Browser) Act(ctx context.Context, action snapshot.Action, page *snapsho
 		return t, ErrStale
 	}
 	switch action.Kind {
-	case "wait":
-		select {
-		case <-ctx.Done():
-			return t, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-		return t, nil
 	case "scroll":
 		_, err := b.sess.Call(ctx, "Input.dispatchMouseEvent", map[string]any{
 			"type": "mouseWheel", "x": 550, "y": 650, "deltaX": 0, "deltaY": action.Delta})

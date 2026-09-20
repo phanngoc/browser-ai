@@ -21,7 +21,9 @@ type env struct {
 	b   *Browser
 }
 
-func setup(t *testing.T) *env {
+func setup(t *testing.T) *env { return setupWith(t, Options{}) }
+
+func setupWith(t *testing.T, opts Options) *env {
 	t.Helper()
 	if _, err := chrome.FindBinary(); err != nil || os.Getenv("BROWSER_AI_SKIP_CHROME") != "" {
 		t.Skip("no Chrome")
@@ -46,7 +48,7 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ch.Close() })
-	b, err := New(ctx, ch.Conn, srv.URL, Options{})
+	b, err := New(ctx, ch.Conn, srv.URL, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +139,31 @@ func TestSnapshotClassification(t *testing.T) {
 	p2 := e.observe()
 	if p2.Fingerprint != p.Fingerprint {
 		t.Error("fingerprint unstable across identical observations")
+	}
+}
+
+func TestObserveWaitsForLateRender(t *testing.T) {
+	e := setupWith(t, Options{StableChecks: 3})
+	// Content that appears shortly after the first read must be in the
+	// observation, otherwise the decision made on it would be stale.
+	e.eval(`setTimeout(() => { document.getElementById('late').textContent = 'Late panel rendered'; }, 25)`)
+	p, tm, err := e.b.Observe(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Text, "Late panel rendered") {
+		t.Fatalf("late content missed (restable=%d): %q", tm.Restable, p.Text)
+	}
+	if tm.Restable < 1 {
+		t.Errorf("expected at least one re-read, got %d", tm.Restable)
+	}
+	if ok, _ := e.b.Fresh(e.ctx, p, nil); !ok {
+		t.Error("stabilised observation should be fresh")
+	}
+	// A page that holds still costs exactly one confirmation read.
+	_, tm, err = e.b.Observe(e.ctx)
+	if err != nil || tm.Restable != 0 {
+		t.Fatalf("quiet page: restable=%d err=%v", tm.Restable, err)
 	}
 }
 
@@ -240,16 +267,21 @@ func TestStaleGuards(t *testing.T) {
 	submit := find(t, p, "click", "Submit")
 	name := find(t, p, "fill", "Name")
 
-	// Unrelated content change: click guard still fresh, marker is not.
+	// Unrelated content change: click/fill guards still fresh, marker is not.
 	e.eval(`document.getElementById('footer').textContent='Footer text v2'`)
 	if ok, _ := e.b.Fresh(e.ctx, p, &submit); !ok {
 		t.Error("click guard should ignore unrelated footer change")
 	}
-	if ok, _ := e.b.Fresh(e.ctx, p, &name); ok {
-		t.Error("fill (marker) should detect footer change")
+	if ok, _ := e.b.Fresh(e.ctx, p, &name); !ok {
+		t.Error("fill guard should ignore unrelated footer change")
 	}
 	if ok, _ := e.b.Fresh(e.ctx, p, nil); ok {
 		t.Error("marker should detect footer change")
+	}
+	// A change to the field's own label goes stale for fill too.
+	e.eval(`document.querySelector('label[for=name]').textContent='Full name'`)
+	if ok, _ := e.b.Fresh(e.ctx, p, &name); ok {
+		t.Error("fill guard should detect target label change")
 	}
 
 	// Target label change: click guard goes stale, Act refuses.
@@ -306,9 +338,10 @@ func TestWaitAndScreenshot(t *testing.T) {
 	e := setup(t)
 	p := e.observe()
 	w := find(t, p, "wait", "Wait for the page to update")
+	e.eval(`document.getElementById('footer').textContent='changed while deciding'`)
 	start := time.Now()
 	if _, err := e.b.Act(e.ctx, w, p, ""); err != nil {
-		t.Fatal(err)
+		t.Fatalf("wait must not go stale: %v", err)
 	}
 	if time.Since(start) < 100*time.Millisecond {
 		t.Error("wait too short")

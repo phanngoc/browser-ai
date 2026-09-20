@@ -34,6 +34,7 @@ type Timing struct {
 	Act      time.Duration `json:"act"`
 	Settle   time.Duration `json:"settle"`
 	Total    time.Duration `json:"total"`
+	Restable int           `json:"restable"` // extra snapshots taken until the page held still
 }
 
 // Step is one executed action.
@@ -223,6 +224,15 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 				return false, textgen.ErrNoKey
 			}
 			v, meta, err := a.text.Text(ctx, fc)
+			if errors.Is(err, textgen.ErrNoValue) {
+				// One malformed reply is a model flake, not a page problem.
+				var meta2 textgen.Meta
+				v, meta2, err = a.text.Text(ctx, fc)
+				meta.Latency += meta2.Latency
+				meta.Usage.InputTokens += meta2.Usage.InputTokens
+				meta.Usage.OutputTokens += meta2.Usage.OutputTokens
+				meta.Model = meta2.Model
+			}
 			if err != nil {
 				return false, err
 			}
@@ -299,6 +309,7 @@ func (a *Agent) observe(ctx context.Context, tm *Timing) (*snapshot.Page, time.D
 		return nil, 0, err
 	}
 	tm.Settle += bt.Settle
+	tm.Restable += bt.Restable
 	return p, bt.Snapshot, nil
 }
 

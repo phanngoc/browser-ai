@@ -12,6 +12,37 @@ client. Everything is instrumented so you can see where each step's time goes.
 Reference implementation: [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
 (Python, MIT). The DOM snapshot script and the policy instructions are ported from it.
 
+## Performance
+
+Real runs, headless Chrome 153, this repo, 2026-09-20. Every pass is verified from the final page,
+not from the model saying DONE. Full tables and method in [docs/BENCH.md](docs/BENCH.md).
+
+| task | decision maker | pass | median | per decision |
+|---|---|---|---|---|
+| **Google Flights** ZRH→LON one-way, until results visible (10 steps) | **Jev** | **3/3** | **9.6 s** | **330 ms** |
+| | gemini-2.5-flash | 1/1 | 22.7 s | 1.06 s |
+| | gemini-2.5-flash-lite | 0/1 — declared DONE on an empty form | 33.2 s | 2.28 s |
+| **Wikipedia** → Gödel's incompleteness theorems (2 steps) | **Jev** | **3/3** | **3.4 s** | **330 ms** |
+| | gemini-2.5-flash-lite | 3/3 | 7.1 s | 0.9–1.4 s |
+
+Jev is a decision model, not a text generator: it picks one of the offered operations and one of
+the offered element indices, and returns a probability over each. That is why a decision costs
+**330 ms from Vietnam — about 200 ms of which is the round trip to `api.typesafe.ai`; Jev itself is
+≈ 130 ms** — versus 1–2 s for a general LLM asked the same question, and why it was the only
+backend that got Google Flights right every time.
+
+Where the 9.6 s of a Flights run goes:
+
+```
+Jev          6.0 s   18–19 decisions × 330 ms (≈ 3.7 s of it is network from VN)
+text model   1.2 s   2 × TYPE_TEXT via mercury-2.5
+browser      1.2 s   snapshot 0.13 s · input 0.45 s · settle waits 0.6 s · ~220 CDP calls
+```
+
+The browser side — hand-rolled CDP over a pipe, one atomic DOM snapshot per step, hit-tested input —
+is ~12 % of the run. The reference Python implementation reports 7.09 s for the same task from Europe
+(~170 ms per Jev call); from the same continent this run projects to ≈ 6.5 s.
+
 ## Quick start
 
 ```sh
@@ -35,18 +66,8 @@ model (default `google/gemini-2.5-flash-lite` via the `TEXT_MODEL_*` credentials
 action space, and its answer is validated the same way — only offered indices can execute. It is
 the same loop, just a slower decision maker: ~1.4 s per decision instead of Jev's ~0.17 s.
 
-Real run, Wikipedia → Gödel's incompleteness theorems, headless, LLM chooser:
-
-```
-  1  TYPE_TEXT  [2] Search Wikipedia                snap    8  model  853  text  766  act  70  settle   32  total  1827  text="Gödel's incompleteness theorems"
-  2  CLICK      [4] Gödel's incompleteness theorem…  snap   55  model 2249  text    -  act  20  settle  561  total  3296
-DONE     2 steps · 4 decisions (1 stale) · 7.548s
-chooser  5.438s total · avg 1.359s/call · 3614 in / 92 out tokens
-text     767ms total · avg 767ms/call · 1 calls
-browser  snapshot 64ms · act 91ms · settle 594ms · 63 CDP calls
-```
-
-72 % of the wall time is the LLM deciding. The browser side is 0.75 s including a real page load.
+See the Performance table above for how it compares: same loop, 3–7× slower decisions, and the
+small model got Google Flights wrong.
 
 Output, one line per executed action, then a summary:
 
@@ -63,8 +84,26 @@ final    Fixture
          http://127.0.0.1:8765/fixture
 ```
 
-(All numbers in ms. This sample used a scripted stand-in for the models; see
-[docs/BENCH.md](docs/BENCH.md) for real measurements.)
+(All numbers in ms. This sample used a scripted stand-in for the models. A real Jev run on Google
+Flights looks like this:)
+
+```
+  1  CLICK      [12] Change ticket type. Round trip   snap  6  model 370  text   -  act 33  settle  23  total  501
+  2  CLICK      [14] One way                          snap  6  model 269  text   -  act 63  settle  32  total  446
+  3  TYPE_TEXT  [15] Where from?                      snap  6  model 314  text 739  act 34  settle 203  total 1359  text="Zurich"
+  4  CLICK      [3] Zürich, Switzerland               snap 14  model 370  text   -  act 23  settle  30  total  476
+  5  TYPE_TEXT  [16] Where to?                        snap 12  model 329  text 574  act 45  settle 157  total 1174  text="London"
+  6  CLICK      [3] London, United Kingdom            snap 15  model 354  text   -  act 36  settle  38  total  520
+  7  CLICK      [18] Open Departure                   snap 10  model 305  text   -  act 57  settle  48  total  497
+  8  CLICK      [3] Sunday, September 20, 2026        snap 21  model 303  text   -  act 41  settle  37  total  435
+  9  CLICK      [52] Done. Search for one-way flights snap 22  model 301  text   -  act 28  settle  29  total  477
+ 10  CLICK      [19] Search                           snap  7  model 293  text   -  act 37  settle  15  total  804
+DONE     10 steps · 18 decisions (7 stale) · 9.684s
+chooser  5.865s total · avg 326ms/call · 44023 in / 3240 out tokens
+text     1.314s total · avg 657ms/call · 2 calls
+browser  snapshot 124ms · act 402ms · settle 615ms · 229 CDP calls
+final    Zürich to London | Google Flights
+```
 
 ### Flags
 
