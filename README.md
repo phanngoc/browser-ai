@@ -17,19 +17,22 @@ Reference implementation: [browser-use/jev-ultrafast](https://github.com/browser
 Real runs, headless Chrome 153, this repo, 2026-09-20. Every pass is verified from the final page,
 not from the model saying DONE. Full tables and method in [docs/BENCH.md](docs/BENCH.md).
 
+Three runs per model, same goal text, pass = verified from the final page.
+
 | task | decision maker | pass | median | per decision |
 |---|---|---|---|---|
 | **Google Flights** ZRH→LON one-way, until results visible (10 steps) | **Jev** | **3/3** | **9.6 s** | **330 ms** |
-| | gemini-2.5-flash | 1/1 | 22.7 s | 1.06 s |
-| | gemini-2.5-flash-lite | 0/1 — declared DONE on an empty form | 33.2 s | 2.28 s |
+| | gemini-2.5-flash | 3/3 | 23.0 s | 1.06–1.16 s |
+| | gemini-2.5-flash-lite | **0/3** — same wrong path every time, then a false DONE | 13.8 s | 0.9–2.3 s |
 | **Wikipedia** → Gödel's incompleteness theorems (2 steps) | **Jev** | **3/3** | **3.4 s** | **330 ms** |
 | | gemini-2.5-flash-lite | 3/3 | 7.1 s | 0.9–1.4 s |
 
 Jev is a decision model, not a text generator: it picks one of the offered operations and one of
 the offered element indices, and returns a probability over each. That is why a decision costs
 **330 ms from Vietnam — about 200 ms of which is the round trip to `api.typesafe.ai`; Jev itself is
-≈ 130 ms** — versus 1–2 s for a general LLM asked the same question, and why it was the only
-backend that got Google Flights right every time.
+≈ 130 ms** — versus 1–2 s for a general LLM asked the same question. On Flights, gemini-2.5-flash also
+went 3/3 but took 2.4× longer; flash-lite failed 3/3 by taking the same wrong turn each time (the
+multi-airport origin dialog) and declaring DONE with no destination set.
 
 Where the 9.6 s of a Flights run goes:
 
