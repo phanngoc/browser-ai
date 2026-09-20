@@ -140,6 +140,31 @@ func TestSnapshotClassification(t *testing.T) {
 	}
 }
 
+func TestObserveWaitsForLateRender(t *testing.T) {
+	e := setup(t)
+	// Content that appears shortly after the first read must be in the
+	// observation, otherwise the decision made on it would be stale.
+	e.eval(`setTimeout(() => { document.getElementById('late').textContent = 'Late panel rendered'; }, 25)`)
+	p, tm, err := e.b.Observe(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Text, "Late panel rendered") {
+		t.Fatalf("late content missed (restable=%d): %q", tm.Restable, p.Text)
+	}
+	if tm.Restable < 1 {
+		t.Errorf("expected at least one re-read, got %d", tm.Restable)
+	}
+	if ok, _ := e.b.Fresh(e.ctx, p, nil); !ok {
+		t.Error("stabilised observation should be fresh")
+	}
+	// A page that holds still costs exactly one confirmation read.
+	_, tm, err = e.b.Observe(e.ctx)
+	if err != nil || tm.Restable != 0 {
+		t.Fatalf("quiet page: restable=%d err=%v", tm.Restable, err)
+	}
+}
+
 func TestFillReplacesAndSettles(t *testing.T) {
 	e := setup(t)
 	p := e.observe()

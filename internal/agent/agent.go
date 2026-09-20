@@ -34,6 +34,7 @@ type Timing struct {
 	Act      time.Duration `json:"act"`
 	Settle   time.Duration `json:"settle"`
 	Total    time.Duration `json:"total"`
+	Restable int           `json:"restable"` // extra snapshots taken until the page held still
 }
 
 // Step is one executed action.
@@ -299,6 +300,7 @@ func (a *Agent) observe(ctx context.Context, tm *Timing) (*snapshot.Page, time.D
 		return nil, 0, err
 	}
 	tm.Settle += bt.Settle
+	tm.Restable += bt.Restable
 	return p, bt.Snapshot, nil
 }
 

@@ -30,20 +30,28 @@ var ErrSelectUnconfirmed = errors.New("browser: dropdown execution was not confi
 // Timing records where browser time went.
 type Timing struct {
 	Settle   time.Duration // post-input wait before the snapshot
-	Snapshot time.Duration // snapshot.js evaluate + decode
+	Snapshot time.Duration // snapshot.js evaluate + decode, including stabilisation re-reads
 	Act      time.Duration // freshness check + input dispatch
+	// Restable counts how many extra snapshots Observe took before the page held still.
+	Restable int
 }
 
 // Options for New.
 type Options struct {
 	Width, Height int
 	LoadTimeout   time.Duration
+	// StableChecks is how many times Observe re-reads the page (after two
+	// animation frames) until two consecutive markers agree. Late-rendering
+	// panels, autocomplete refreshes and post-navigation layout would
+	// otherwise make the next decision stale. 0 uses the default of 3; -1 disables.
+	StableChecks int
 }
 
 // Browser owns one page target.
 type Browser struct {
-	sess       *cdp.Session
-	afterInput *snapshot.Action
+	sess         *cdp.Session
+	afterInput   *snapshot.Action
+	stableChecks int
 }
 
 // New opens a background tab, applies viewport/focus emulation, navigates and
@@ -63,7 +71,10 @@ func New(ctx context.Context, conn *cdp.Conn, url string, opts Options) (*Browse
 	if err != nil {
 		return nil, err
 	}
-	b := &Browser{sess: sess}
+	b := &Browser{sess: sess, stableChecks: opts.StableChecks}
+	if b.stableChecks == 0 {
+		b.stableChecks = 3
+	}
 	if _, err := sess.Call(ctx, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width": w, "height": h, "deviceScaleFactor": 1, "mobile": false}); err != nil {
 		b.Close(ctx)
@@ -123,9 +134,41 @@ func (b *Browser) Observe(ctx context.Context) (*snapshot.Page, Timing, error) {
 		if err != nil {
 			return nil, t, err
 		}
+		p, t.Restable, err = b.stabilize(ctx, p)
+		if err != nil {
+			return nil, t, err
+		}
 		t.Snapshot = time.Since(start)
 		return p, t, nil
 	}
+}
+
+// twoFrames resolves after two animation frames, or 50 ms if frames stall.
+const twoFrames = `new Promise(r => { setTimeout(r, 50); requestAnimationFrame(() => requestAnimationFrame(r)); })`
+
+// stabilize re-reads the page until two consecutive markers agree, so a
+// decision is not made on a page that is still rendering. Bounded: on a page
+// that never holds still it returns the latest read after stableChecks tries.
+func (b *Browser) stabilize(ctx context.Context, p *snapshot.Page) (*snapshot.Page, int, error) {
+	for i := 0; i < b.stableChecks; i++ {
+		if _, err := b.sess.Evaluate(ctx, twoFrames, true); err != nil && ignoreException(err) != nil {
+			return nil, i, err
+		}
+		raw, err := b.sess.Evaluate(ctx, snapshot.Expr, false)
+		if err != nil || len(raw) == 0 || string(raw) == "null" {
+			// Navigating: hand back what we have; the next Fresh check catches it.
+			return p, i, ignoreException(err)
+		}
+		next, err := snapshot.Decode(raw)
+		if err != nil {
+			return nil, i, err
+		}
+		if jsonEqual(next.Marker, p.Marker) {
+			return next, i, nil
+		}
+		p = next
+	}
+	return p, b.stableChecks, nil
 }
 
 // Fresh reports whether page still describes the live document. For click and
