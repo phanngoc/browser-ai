@@ -68,6 +68,7 @@ type DecisionRecord struct {
 	Confidence  float64         `json:"confidence"`
 	Latency     time.Duration   `json:"latency"`
 	Executed    bool            `json:"executed"`
+	Refused     string          `json:"refused,omitempty"` // why a non-executed decision was dropped
 	Request     json.RawMessage `json:"request,omitempty"`
 	Answers     json.RawMessage `json:"answers,omitempty"`
 }
@@ -96,6 +97,9 @@ type Options struct {
 	Screenshots bool
 	OnStep      func(Step)
 	KeepRequest bool // retain request/answers JSON in DecisionRecord
+	// RefuseLimit is how many consecutive refusals hide a target from the
+	// model (default 2; 0 uses the default, -1 disables).
+	RefuseLimit int
 }
 
 // Agent drives one browser toward one goal.
@@ -110,6 +114,10 @@ type Agent struct {
 	pending *pendingText
 	res     Result
 	started time.Time
+	// refused counts consecutive executor refusals per target (node+kind).
+	// A target refused RefuseLimit times is withheld from the next decision,
+	// so the model cannot pick a covered button forever. Cleared on execution.
+	refused map[string]int
 }
 
 type pendingText struct {
@@ -123,7 +131,10 @@ func New(br *browser.Browser, chooser Chooser, text TextGen, opts Options) *Agen
 	if opts.MaxSteps <= 0 {
 		opts.MaxSteps = 60
 	}
-	return &Agent{br: br, jev: chooser, text: text, opts: opts, res: Result{Goal: opts.Goal}}
+	if opts.RefuseLimit == 0 {
+		opts.RefuseLimit = 2
+	}
+	return &Agent{br: br, jev: chooser, text: text, opts: opts, res: Result{Goal: opts.Goal}, refused: map[string]int{}}
 }
 
 // Run executes until DONE, BLOCKED, budget exhaustion or an error.
@@ -174,7 +185,8 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 		a.page = page
 	}
 
-	d, err := a.jev.Choose(ctx, page, a.opts.Goal, a.recent)
+	offered := a.withoutRefused(page)
+	d, err := a.jev.Choose(ctx, offered, a.opts.Goal, a.recent)
 	if err != nil {
 		return false, err
 	}
@@ -193,7 +205,7 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		if !fresh {
-			return false, a.stale(ctx)
+			return false, a.stale(ctx, recIdx, "page changed before "+d.Choice)
 		}
 		a.res.Decisions[recIdx].Executed = true
 		a.res.Status = map[string]string{"DONE": "done", "BLOCKED": "blocked"}[d.Choice]
@@ -213,7 +225,7 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		if !fresh {
-			return false, a.stale(ctx)
+			return false, a.stale(ctx, recIdx, "page changed before text generation")
 		}
 		fc := textgen.FieldContext(a.opts.Goal, action, page, a.recent)
 		key, _ := json.Marshal(fc)
@@ -249,12 +261,14 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 	bt, err := a.br.Act(ctx, action, page, value)
 	tm.Act = bt.Act
 	if errors.Is(err, browser.ErrStale) {
-		return false, a.stale(ctx)
+		a.refused[refuseKey(action)]++
+		return false, a.stale(ctx, recIdx, err.Error())
 	}
 	if err != nil {
 		return false, err
 	}
 	a.pending = nil
+	a.refused = map[string]int{}
 	a.res.Decisions[recIdx].Executed = true
 
 	// Log execution before observing: a navigation must not erase the action.
@@ -313,8 +327,32 @@ func (a *Agent) observe(ctx context.Context, tm *Timing) (*snapshot.Page, time.D
 	return p, bt.Snapshot, nil
 }
 
+func refuseKey(a snapshot.Action) string { return fmt.Sprintf("%d/%s/%s", a.Node, a.Kind, a.Label) }
+
+// withoutRefused hides targets the executor has refused RefuseLimit times in
+// a row. The returned page shares everything else with the original.
+func (a *Agent) withoutRefused(page *snapshot.Page) *snapshot.Page {
+	if a.opts.RefuseLimit < 0 || len(a.refused) == 0 {
+		return page
+	}
+	kept := make([]snapshot.Action, 0, len(page.Actions))
+	for _, act := range page.Actions {
+		if a.refused[refuseKey(act)] >= a.opts.RefuseLimit {
+			continue
+		}
+		kept = append(kept, act)
+	}
+	if len(kept) == len(page.Actions) {
+		return page
+	}
+	copy := *page
+	copy.Actions = kept
+	return &copy
+}
+
 // stale drops the current decision and re-observes. Nothing was executed.
-func (a *Agent) stale(ctx context.Context) error {
+func (a *Agent) stale(ctx context.Context, recIdx int, why string) error {
+	a.res.Decisions[recIdx].Refused = why
 	a.res.Stale++
 	p, _, err := a.br.Observe(ctx)
 	if err != nil {

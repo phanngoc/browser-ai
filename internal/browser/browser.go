@@ -299,6 +299,27 @@ func (b *Browser) Act(ctx context.Context, action snapshot.Action, page *snapsho
 	return t, nil
 }
 
+// Point is a viewport coordinate.
+type Point struct{ X, Y float64 }
+
+// Resolve runs the executor's pre-input check for a click/fill target without
+// dispatching anything: connected, visible, enabled, centre inside the
+// viewport and not covered. nil means the target would be refused.
+func (b *Browser) Resolve(ctx context.Context, action snapshot.Action) (*Point, error) {
+	if action.Kind == "select" {
+		return nil, errors.New("browser: Resolve does not apply to select")
+	}
+	raw, err := b.sess.Evaluate(ctx, resolveJS(action), false)
+	if err != nil {
+		return nil, ignoreException(err)
+	}
+	var pt Point
+	if string(raw) == "null" || json.Unmarshal(raw, &pt) != nil {
+		return nil, nil
+	}
+	return &pt, nil
+}
+
 // Screenshot captures a JPEG of the viewport.
 func (b *Browser) Screenshot(ctx context.Context) ([]byte, error) {
 	res, err := b.sess.Call(ctx, "Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": 72})

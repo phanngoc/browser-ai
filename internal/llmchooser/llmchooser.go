@@ -153,6 +153,9 @@ func (c *Client) requestBody(messages []map[string]string) map[string]any {
 			if c.Reasoning != "" {
 				body["reasoning_effort"] = c.Reasoning
 			}
+			if e := body["reasoning_effort"]; e != "none" && e != "minimal" {
+				body["max_completion_tokens"] = 2000 // reasoning tokens count against the cap
+			}
 		} else {
 			body["temperature"] = 0
 		}
