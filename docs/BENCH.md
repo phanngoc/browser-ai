@@ -45,17 +45,37 @@ never from the model's DONE. Text for `TYPE_TEXT` comes from `inception/mercury-
 
 ### Headline
 
+Three runs per model.
+
 | task | decision maker | pass | median total | per decision | decisions | browser share |
 |---|---|---|---|---|---|---|
 | Google Flights ZRH→LON one-way, verify results visible | **Jev** (`jev-1.13.0`) | **3/3** | **9.57 s** | **330 ms** | 18–19 | 1.2 s |
-| | gemini-2.5-flash (via OpenRouter) | 1/1 | 22.7 s | 1.06 s | 17 | 1.3 s |
-| | gemini-2.5-flash-lite | **0/1** (false DONE) | 33.2 s | 2.28 s | 13 | 0.9 s |
+| | gemini-2.5-flash (via OpenRouter) | 3/3 | 22.99 s | 1.06–1.16 s | 17–19 | 1.3 s |
+| | gemini-2.5-flash-lite | **0/3** (false DONE ×3) | 13.78 s | 0.92–2.28 s | 12–13 | 0.9 s |
 | Wikipedia → Gödel article | **Jev** | **3/3** | **3.44 s** | **330 ms** | 6 | 0.6 s |
 | | gemini-2.5-flash-lite | 3/3 | 7.05 s | 0.9–1.4 s | 4–6 | 0.6 s |
 | Reference (browser-use/jev-ultrafast, Python, Jev from Europe) | Jev | 3/3 | 7.09 s / 2.80 s | ~170 ms | — | — |
 
-**Jev is 3–7× faster per decision than a general LLM and the only one that got Flights right every
-time.** The gap to the reference's 7.09 s is network: this machine is in Vietnam.
+**Jev is 3–7× faster per decision than a general LLM.** gemini-2.5-flash reaches the same 3/3 at
+2.4× the wall time; flash-lite never passes. The gap to the reference's 7.09 s is network: this
+machine is in Vietnam.
+
+### Google Flights with general LLMs, run by run
+
+| model | run | result | steps | decisions (stale) | total | model total (avg) | text | browser | CDP |
+|---|---|---|---|---|---|---|---|---|---|
+| gemini-2.5-flash | 1 | ✓ 21 results | 10 | 17 (6) | 22.70 s | 18.06 s (1062 ms) | 1.64 s | 1.31 s | 209 |
+| | 2 | ✓ | 10 | 19 (8) | 25.38 s | 21.94 s (1155 ms) | 1.63 s | 1.29 s | 230 |
+| | 3 | ✓ | 10 | 18 (7) | 22.99 s | 19.09 s (1060 ms) | 2.20 s | 1.31 s | 202 |
+| gemini-2.5-flash-lite | 1 | ✗ false DONE | 9 | 13 (3) | 33.20 s | 29.61 s (2277 ms) | 0.91 s | 0.92 s | 231 |
+| | 2 | ✗ false DONE | 8 | 12 (3) | 12.77 s | 11.07 s (922 ms) | 0.65 s | 0.89 s | 169 |
+| | 3 | ✗ false DONE | 8 | 12 (3) | 13.78 s | 11.93 s (994 ms) | 0.76 s | 0.92 s | 183 |
+
+flash-lite took the identical wrong path in all three runs: ticket type → One way → open "Where
+from?" → **"Origin, Select multiple airports"** → type "London" into "Where else?" → Done → open
+Departure → 20 Sep → DONE. Origin stayed at the geo default, destination was never set. Its lower
+wall time is only because it quit early. gemini-2.5-flash followed the same correct sequence as Jev
+every time; the difference is purely decision latency.
 
 ### Where a Jev decision's 330 ms goes
 
