@@ -101,3 +101,22 @@ func TestControlsAndDone(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestBodyPerProvider(t *testing.T) {
+	msgs := []map[string]string{{"role": "user", "content": "x"}}
+	or := New("k", "https://openrouter.ai/api/v1", "google/gemini-2.5-flash").requestBody(msgs)
+	if or["max_tokens"] != 300 || or["reasoning"] == nil || or["temperature"] != 0 {
+		t.Errorf("openrouter body %v", or)
+	}
+	oa5 := New("k", "https://api.openai.com/v1", "gpt-5.4-mini").requestBody(msgs)
+	if oa5["max_completion_tokens"] != 300 || oa5["reasoning_effort"] != "none" || oa5["temperature"] != nil || oa5["reasoning"] != nil || oa5["max_tokens"] != nil {
+		t.Errorf("openai gpt-5.4 body %v", oa5)
+	}
+	if New("k", "https://api.openai.com/v1", "gpt-5-mini").requestBody(msgs)["reasoning_effort"] != "minimal" {
+		t.Error("gpt-5-mini should use minimal")
+	}
+	oa4 := New("k", "https://api.openai.com/v1", "gpt-4.1-mini").requestBody(msgs)
+	if oa4["temperature"] != 0 || oa4["reasoning_effort"] != nil {
+		t.Errorf("openai gpt-4.1 body %v", oa4)
+	}
+}
