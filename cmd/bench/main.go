@@ -3,6 +3,7 @@
 //	bench rtt       [--n 1000] [--attach [target]] [--headless]   Runtime.evaluate round-trips, pipe vs ws
 //	bench snapshot  --url U [--n 20] [--attach [target]]           snapshot.js cost per observation
 //	bench coldstart [--n 5] [--headless]                            launch → getVersion → about:blank ready
+//	bench churn     --url U [--n 10] [--interval 300ms]             which freshness inputs change on an untouched page
 package main
 
 import (
@@ -30,6 +31,9 @@ func main() {
 	headless := fs.Bool("headless", false, "launch headless")
 	url := fs.String("url", "https://en.wikipedia.org/wiki/Main_Page", "page for snapshot bench")
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	interval := fs.Duration("interval", 300*time.Millisecond, "gap between churn observations")
+	fill := fs.String("fill", "", "churn: type TEXT into the field whose label contains LABEL first, as LABEL=TEXT")
+	check := fs.String("check", "", "churn: after --fill, run the executor's freshness check for the click whose label contains this, once per interval")
 	_ = fs.Parse(os.Args[2:])
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -42,6 +46,8 @@ func main() {
 		err = benchSnapshot(ctx, or(*n, 20), *url, *attach, *headless, *asJSON)
 	case "coldstart":
 		err = benchColdstart(ctx, or(*n, 5), *headless, *asJSON)
+	case "churn":
+		err = benchChurn(ctx, or(*n, 10), *interval, *url, *attach, *headless, *fill, *check)
 	default:
 		usage()
 	}
@@ -52,7 +58,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: bench rtt|snapshot|coldstart [flags]")
+	fmt.Fprintln(os.Stderr, "usage: bench rtt|snapshot|coldstart|churn [flags]")
 	os.Exit(2)
 }
 

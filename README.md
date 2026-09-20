@@ -23,7 +23,10 @@ Three runs per model, same goal text, pass = verified from the final page.
 |---|---|---|---|---|
 | **Google Flights** ZRH→LON one-way, until results visible (10 steps) | **Jev** | **3/3** | **9.6 s** | **330 ms** |
 | | gemini-2.5-flash | 3/3 | 23.0 s | 1.06–1.16 s |
+| | gpt-5.4-mini, reasoning low | 2/3 | 29.4 s | 1.3–1.7 s |
+| | gpt-5.4-mini, reasoning none | 0/3 — one run had everything set but declared DONE before Search | 22.0 s | 0.85–0.91 s |
 | | gemini-2.5-flash-lite | **0/3** — same wrong path every time, then a false DONE | 13.8 s | 0.9–2.3 s |
+| | gpt-5.4-nano (none / low) | 0/3 · 0/3 | 16.7 s · 37.4 s | 0.8–1.7 s |
 | **Wikipedia** → Gödel's incompleteness theorems (2 steps) | **Jev** | **3/3** | **3.4 s** | **330 ms** |
 | | gemini-2.5-flash-lite | 3/3 | 7.1 s | 0.9–1.4 s |
 
@@ -31,8 +34,9 @@ Jev is a decision model, not a text generator: it picks one of the offered opera
 the offered element indices, and returns a probability over each. That is why a decision costs
 **330 ms from Vietnam — about 200 ms of which is the round trip to `api.typesafe.ai`; Jev itself is
 ≈ 130 ms** — versus 1–2 s for a general LLM asked the same question. On Flights, gemini-2.5-flash also
-went 3/3 but took 2.4× longer; flash-lite failed 3/3 by taking the same wrong turn each time (the
-multi-airport origin dialog) and declaring DONE with no destination set.
+went 3/3 but took 2.4× longer; gpt-5.4-mini needed reasoning turned on to pass 2/3 at 3× the time;
+the small models (flash-lite, gpt-5.4-nano) never passed — they take the multi-airport dialog wrong
+turn or loop on a closed dropdown, then declare DONE with no destination set.
 
 Where the 9.6 s of a Flights run goes:
 

@@ -52,6 +52,9 @@ Three runs per model.
 | Google Flights ZRH→LON one-way, verify results visible | **Jev** (`jev-1.13.0`) | **3/3** | **9.57 s** | **330 ms** | 18–19 | 1.2 s |
 | | gemini-2.5-flash (via OpenRouter) | 3/3 | 22.99 s | 1.06–1.16 s | 17–19 | 1.3 s |
 | | gemini-2.5-flash-lite | **0/3** (false DONE ×3) | 13.78 s | 0.92–2.28 s | 12–13 | 0.9 s |
+| | gpt-5.4-mini, `reasoning_effort: low` (api.openai.com) | 2/3 | 29.41 s | 1.29–1.69 s | 11–35 | 0.5–1.9 s |
+| | gpt-5.4-mini, `reasoning_effort: none` | 0/3 | 22.01 s | 0.85–0.91 s | 13–29 | 0.5–1.5 s |
+| | gpt-5.4-nano, `none` / `low` | 0/3 · 0/3 | 16.73 s · 37.36 s | 0.80–1.65 s | 12–37 | 0.5–2.1 s |
 | Wikipedia → Gödel article | **Jev** | **3/3** | **3.44 s** | **330 ms** | 6 | 0.6 s |
 | | gemini-2.5-flash-lite | 3/3 | 7.05 s | 0.9–1.4 s | 4–6 | 0.6 s |
 | Reference (browser-use/jev-ultrafast, Python, Jev from Europe) | Jev | 3/3 | 7.09 s / 2.80 s | ~170 ms | — | — |
@@ -70,6 +73,19 @@ machine is in Vietnam.
 | gemini-2.5-flash-lite | 1 | ✗ false DONE | 9 | 13 (3) | 33.20 s | 29.61 s (2277 ms) | 0.91 s | 0.92 s | 231 |
 | | 2 | ✗ false DONE | 8 | 12 (3) | 12.77 s | 11.07 s (922 ms) | 0.65 s | 0.89 s | 169 |
 | | 3 | ✗ false DONE | 8 | 12 (3) | 13.78 s | 11.93 s (994 ms) | 0.76 s | 0.92 s | 183 |
+
+| gpt-5.4-mini · none | 1 | ✗ blocked (loops on "Open Where else?") | 8 | 13 (4) | 13.05 s | 11.14 s (857 ms) | 1.20 s | 0.54 s | 200 |
+| | 2 | ✗ false DONE — Zürich, London, one way, 20 Sep all set, never clicked Search | 10 | 20 (9) | 22.01 s | 18.26 s (913 ms) | 1.77 s | 1.50 s | 180 |
+| | 3 | ✗ false DONE on "Explore" page | 17 | 29 (11) | 27.97 s | 24.56 s (847 ms) | 1.38 s | 1.46 s | 275 |
+| gpt-5.4-mini · low | 1 | ✗ client error: empty reply under a 300-token cap (fixed: 2000 when reasoning is on) | 7 | 11 (4) | 26.57 s | 18.56 s (1687 ms) | 1.18 s | 0.51 s | 188 |
+| | 2 | ✓ | 12 | 19 (6) | 29.41 s | 24.42 s (1285 ms) | 3.10 s | 1.58 s | 200 |
+| | 3 | ✓ | 23 | 35 (11) | 64.03 s | 58.53 s (1672 ms) | 3.09 s | 1.87 s | 317 |
+| gpt-5.4-nano · none | 1–3 | ✗ blocked ×3 (budget / three no-change actions) | 9–25 | 12–37 | 13.4–35.5 s | 0.80–0.85 s/call | | | |
+| gpt-5.4-nano · low | 1–3 | ✗ blocked ×3 | 9–25 | 16–28 | 21.4–49.5 s | 1.23–1.65 s/call | | | |
+
+OpenAI models were driven with the cheapest reasoning setting each accepts (`none` for gpt-5.4,
+otherwise `minimal`) unless noted; `low` roughly doubles per-decision latency. Same text helper
+(mercury-2.5) for every row.
 
 flash-lite took the identical wrong path in all three runs: ticket type → One way → open "Where
 from?" → **"Origin, Select multiple airports"** → type "London" into "Where else?" → Done → open
@@ -126,3 +142,19 @@ to `api.typesafe.ai`.
 
 Per agent step the browser costs ≈ 6 ms snapshot + a few CDP calls at ~0.2 ms each, plus a
 50–200 ms settle wait that is deliberate. Everything else is model latency.
+
+## Case study: tiki.vn "add an iPhone 17 to the cart" (2026-09-20, Jev, attached Chrome)
+
+Goal in English against a Vietnamese UI. Four runs, each one found something real:
+
+| run | result | what happened |
+|---|---|---|
+| 1 | error, 0 steps | text helper (mercury-2.5) returned no value for the search box — its accessible name was the rotating promo placeholder "Freeship đơn từ 45k" plus 6 KB of Vietnamese page text. Same helper answers "iPhone 17" on a trimmed context. Switched the helper to gemini-2.5-flash-lite for the rest. |
+| 2 | blocked, 1 step, **49 stale** | Jev chose CLICK "Tìm kiếm" 47 times; the executor refused every one. Root cause found with `bench churn --check`: not the guard — the button's centre was under a floating widget, and refused decisions were invisible to the model, so it repeated itself. |
+| 3 | blocked, 17 steps | "Tìm kiếm" now clicked; product opened; "Thêm vào giỏ" refused 25× (centre covered by the chat widget at 1120 px); the model fell back to the quantity "+" button ("add-icon") 14 times. Refusal counter was being reset by every unrelated execution. |
+| 4 | **DONE in 5.06 s, 4 steps** | search → results → product → "Thêm vào giỏ" clicked via an uncovered edge point. tiki then demanded a login; the model declared DONE on the login modal — a false DONE, caught by checking the page. Completing the task needs a logged-in profile. |
+
+Fixes that came out of it (all in `internal/browser` / `internal/agent`): off-centre hit-test
+points for partially covered targets; refusal reasons recorded in the trace; a target refused twice
+on the same document is withheld from later decisions; `bench churn` for diagnosing pages that never
+hold still. Jev's share stayed at ~320 ms/decision throughout; the browser side of run 4 was 0.24 s.

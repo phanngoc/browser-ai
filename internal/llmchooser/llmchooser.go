@@ -29,6 +29,9 @@ type Client struct {
 	Model   string
 	// MaxText caps the visible page text sent per decision.
 	MaxText int
+	// Reasoning overrides the provider-specific "lowest reasoning" default
+	// (e.g. "low" for OpenAI gpt-5 models). Empty keeps the default.
+	Reasoning string
 }
 
 // New builds a client. Defaults: OpenRouter, gemini-2.5-flash-lite.
@@ -134,13 +137,52 @@ func (c *Client) Choose(ctx context.Context, page *snapshot.Page, goal string, h
 	return nil, fmt.Errorf("%w: %v", ErrInvalidAnswer, lastErr)
 }
 
-func (c *Client) ask(ctx context.Context, messages []map[string]string) (*answer, json.RawMessage, jev.Usage, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model": c.Model, "max_tokens": 300, "temperature": 0,
+// requestBody adapts to the provider: OpenRouter takes a "reasoning" object
+// and "max_tokens"; api.openai.com wants "max_completion_tokens", rejects
+// "temperature" on gpt-5 models and takes "reasoning_effort" instead.
+func (c *Client) requestBody(messages []map[string]string) map[string]any {
+	body := map[string]any{
+		"model":           c.Model,
 		"response_format": map[string]string{"type": "json_object"},
-		"reasoning":       map[string]any{"enabled": false},
 		"messages":        messages,
-	})
+	}
+	if strings.Contains(c.BaseURL, "api.openai.com") {
+		body["max_completion_tokens"] = 300
+		if strings.HasPrefix(c.Model, "gpt-5") || strings.HasPrefix(c.Model, "o") {
+			body["reasoning_effort"] = lowestReasoning(c.Model)
+			if c.Reasoning != "" {
+				body["reasoning_effort"] = c.Reasoning
+			}
+			if e := body["reasoning_effort"]; e != "none" && e != "minimal" {
+				body["max_completion_tokens"] = 2000 // reasoning tokens count against the cap
+			}
+		} else {
+			body["temperature"] = 0
+		}
+		return body
+	}
+	body["max_tokens"] = 300
+	body["temperature"] = 0
+	body["reasoning"] = map[string]any{"enabled": false}
+	if c.Reasoning != "" && c.Reasoning != "none" {
+		body["reasoning"] = map[string]any{"effort": c.Reasoning}
+	}
+	return body
+}
+
+// lowestReasoning is the cheapest reasoning_effort a model accepts:
+// gpt-5.4 and later take "none", earlier gpt-5 / o-series take "minimal".
+func lowestReasoning(model string) string {
+	for _, p := range []string{"gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-5.7", "gpt-5.8", "gpt-5.9", "gpt-6"} {
+		if strings.HasPrefix(model, p) {
+			return "none"
+		}
+	}
+	return "minimal"
+}
+
+func (c *Client) ask(ctx context.Context, messages []map[string]string) (*answer, json.RawMessage, jev.Usage, error) {
+	body, _ := json.Marshal(c.requestBody(messages))
 	data, err := jev.PostJSON(ctx, c.HTTP, c.BaseURL+"/chat/completions", c.Key, body)
 	if err != nil {
 		return nil, nil, jev.Usage{}, err

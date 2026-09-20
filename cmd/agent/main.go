@@ -42,6 +42,7 @@ func main() {
 	quiet := flag.Bool("quiet", false, "print only the final table")
 	chooserFlag := flag.String("chooser", "", "jev (TypeSafe) or llm (general LLM via TEXT_MODEL_* credentials); default: jev if TYPESAFE_API_KEY is set, else llm")
 	chooserModel := flag.String("chooser-model", "", "model for --chooser llm (default google/gemini-2.5-flash-lite; env CHOOSER_MODEL)")
+	chooserBase := flag.String("chooser-base-url", "", "OpenAI-compatible base URL for --chooser llm (env CHOOSER_BASE_URL, else TEXT_MODEL_BASE_URL)")
 	flag.Parse()
 	if *url == "" || *goal == "" {
 		flag.Usage()
@@ -78,8 +79,16 @@ func main() {
 		if model == "" {
 			model = os.Getenv("CHOOSER_MODEL")
 		}
-		lc := llmchooser.New(os.Getenv("TEXT_MODEL_API_KEY"), os.Getenv("TEXT_MODEL_BASE_URL"), model)
+		base := *chooserBase
+		if base == "" {
+			base = firstEnv("CHOOSER_BASE_URL", "TEXT_MODEL_BASE_URL")
+		}
+		lc := llmchooser.New(firstEnv("CHOOSER_API_KEY", "TEXT_MODEL_API_KEY"), base, model)
+		lc.Reasoning = os.Getenv("CHOOSER_REASONING")
 		chooser, warmChooser, chooserName = lc, lc.Warm, "llm "+lc.Model
+		if lc.Reasoning != "" {
+			chooserName += " (reasoning " + lc.Reasoning + ")"
+		}
 	default:
 		fatal(fmt.Errorf("unknown --chooser %q", which))
 	}
@@ -275,6 +284,16 @@ func loadEnv(path string) {
 			os.Setenv(k, v)
 		}
 	}
+}
+
+// firstEnv returns the first non-empty environment variable among names.
+func firstEnv(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func trunc(s string, n int) string {
