@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +36,13 @@ Or start a separate Chrome with a debugging port (Chrome 136+ refuses the defaul
     --remote-debugging-port=9222 --user-data-dir="$HOME/.browser-ai-profile"
 and rerun with --attach http://127.0.0.1:9222`)
 
+// ApprovalHint is called once when the WebSocket handshake takes longer than
+// a second: Chrome's built-in remote debugging (chrome://inspect) asks the
+// user to allow each new client and holds the handshake until they do.
+var ApprovalHint = func() {
+	fmt.Fprintln(os.Stderr, "chrome: waiting for you to click \"Allow\" in the remote-debugging prompt shown by Chrome…")
+}
+
 // Attach connects to a running Chrome. target may be:
 //   - ""                       auto-discover via DevToolsActivePort, then http://127.0.0.1:9222
 //   - "ws://…/devtools/browser/…"  a browser WebSocket URL
@@ -45,9 +53,17 @@ func Attach(ctx context.Context, target string) (*Attached, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := ws.Dial(ctx, wsURL)
+	hint := time.AfterFunc(1500*time.Millisecond, func() {
+		if ApprovalHint != nil {
+			ApprovalHint()
+		}
+	})
+	dctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	c, err := ws.Dial(dctx, wsURL)
+	cancel()
+	hint.Stop()
 	if err != nil {
-		return nil, fmt.Errorf("chrome: dial %s: %w", wsURL, err)
+		return nil, fmt.Errorf("chrome: dial %s (did you allow the connection in Chrome?): %w", wsURL, err)
 	}
 	a := &Attached{Conn: cdp.NewConn(c), WSURL: wsURL, Source: source}
 	vctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -95,8 +111,9 @@ func Discover(ctx context.Context, target string) (wsURL, source string, err err
 
 // probe checks a discovered URL is live (the file may be stale). It asks the
 // HTTP side for /json/version first; Chrome's built-in "Allow remote
-// debugging" (chrome://inspect) serves only the WebSocket, so it falls back
-// to a real handshake on the discovered URL.
+// debugging" (chrome://inspect) serves only the WebSocket and gates each
+// handshake behind a user prompt, so it falls back to a plain TCP connect —
+// the handshake itself happens in Attach, where we can wait for the user.
 func probe(ctx context.Context, wsURL string) (string, error) {
 	rest := strings.TrimPrefix(wsURL, "ws://")
 	host := rest
@@ -106,13 +123,12 @@ func probe(ctx context.Context, wsURL string) (string, error) {
 	if u, err := versionEndpoint(ctx, "http://"+host); err == nil {
 		return u, nil
 	}
-	dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	c, err := ws.Dial(dctx, wsURL)
+	d := net.Dialer{Timeout: time.Second}
+	conn, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
 		return "", err
 	}
-	c.Close()
+	conn.Close()
 	return wsURL, nil
 }
 

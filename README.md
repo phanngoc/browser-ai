@@ -155,19 +155,135 @@ observe ─► choose (1 Jev request: operation + a target per operation) ─►
    └──────────── stale? re-observe, never retry a mutation ◄──── fresh? ─► act ─► settle
 ```
 
-- **Snapshot** (`internal/snapshot/snapshot.js`): one `Runtime.evaluate` returns visible text,
-  an indexed table of controls with code-owned node ids (a `WeakMap`, not CDP ids, not
-  selectors), current values, a semantic `marker` and per-node `guards`.
-- **Decision** (`internal/jev`): the element table becomes `choice` questions — `operation`
-  plus `click_target`, `type_text_target`, `select_target`. Only the head matching the chosen
-  operation is validated and consumed. Answers are checked strictly (choice ∈ offered ids,
-  probabilities over exactly those ids, sum ≈ 1, argmax = choice).
-- **Execute** (`internal/browser`): re-check freshness (scoped guard for click/select, full
-  marker otherwise), re-resolve geometry, hit-test with `elementFromPoint`, then dispatch real
-  input events. `fill` = click → select-all → `Input.insertText`. Native `<select>` is set in
-  page and the change event confirmed.
-- **Settle**: ≤ 2 animation frames or 50 ms; after typing into a combobox, wait for visible
-  options up to 200 ms. Execution is logged *before* the next observation.
+### Data flow of one step, with the real payloads
+
+Taken from a recorded Google Flights run (`--trace`), step 3: the agent has already switched to
+"One way" and must now fill the origin.
+
+**1. observe — one CDP call, ~6 ms**
+
+`Runtime.evaluate(snapshot.js)` returns the whole page state atomically:
+
+```jsonc
+{
+  "url": "https://www.google.com/travel/flights?…", "title": "Find Cheap Flights … - Google Flights",
+  "text": "Skip to main content\nExplore\nFlights\nHotels\n…",        // viewport-visible text only, ≤ 6000 chars
+  "actions": [                                                          // ≤ 250 executable candidates
+    {"id":"e15","kind":"fill", "node":31,"role":"combobox","label":"Where from?","value":"Da Nang","expanded":"false"},
+    {"id":"e16","kind":"click","node":31,"role":"combobox","label":"Open Where from?", …},
+    {"id":"e17","kind":"fill", "node":32,"role":"combobox","label":"Where to? ", …},
+    …, {"id":"scroll_down","kind":"scroll","delta":560}, {"id":"wait","kind":"wait"}
+  ],
+  "marker":  [timeOrigin, url, scrollX, scrollY, w, h, title, text, actions-without-geometry, formValues],
+  "page_key":[timeOrigin, url, scroll…, [[nodeId, value, checked, selectedIndex, disabled, readOnly], …]],
+  "guards":  {"31": [31,"combobox","Where from?","Da Nang",…, "<innerText of enclosing form/dialog>"], …}
+}
+```
+
+`node` is an id the script assigned through a `WeakMap` — not a CDP node id, never a selector. `marker`,
+`page_key` and `guards` are what the freshness checks compare later.
+
+**2. choose — one HTTPS request to Jev, ~330 ms (≈ 200 ms of it network from VN)**
+
+`POST https://api.typesafe.ai/v1/systemone` · `Authorization: Bearer $TYPESAFE_API_KEY`
+
+```jsonc
+{
+  "model": "jev-latest",
+  "state": {
+    "page": {"url": "…", "title": "…", "text": "…"},
+    "elements": [                                      // one index per node, both operations listed
+      {"index":"15","label":"Where from?","role":"combobox","value":"Da Nang","expanded":"false","operations":["TYPE_TEXT","CLICK"]},
+      {"index":"16","label":"Where to? ","role":"combobox","expanded":"false","operations":["TYPE_TEXT","CLICK"]},
+      {"index":"17","label":"Departure","role":"textbox","operations":["TYPE_TEXT","CLICK"]}, …   // 24 elements
+    ],
+    "recent_actions": [
+      {"action":"Change ticket type. Round trip","kind":"click","text":null,"page_changed":true},
+      {"action":"One way","kind":"click","text":null,"page_changed":true}
+    ]
+  },
+  "questions": {                                       // answered together, in one round trip
+    "operation": {"type":"choice",
+      "criteria": {"CLICK":"Click an element, button, menu option, autocomplete suggestion, or calendar day.",
+                   "TYPE_TEXT":"Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
+                   "SCROLL_DOWN":"Scroll down","WAIT":"Wait for the page to update",
+                   "DONE":"Every requirement is visibly satisfied.","BLOCKED":"No supported operation can progress."},
+      "instructions": {"goal":"Find one-way flights from Zurich to London on September 20, 2026 …","rules":"<policy>"}},
+    "click_target":     {"type":"choice","criteria": {"1":{…},…,"15":{"element":"[15] Where from?","current_value":"Da Nang","role":"combobox","expanded":"false"},…}, "instructions": {…,"operation":"CLICK"}},
+    "type_text_target": {"type":"choice","criteria": {"15":{…},"16":{…},"17":{…}},                              "instructions": {…,"operation":"TYPE_TEXT"}}
+  }
+}
+```
+
+Response (314 ms):
+
+```jsonc
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "operation":        {"type":"choice","choice":"TYPE_TEXT","confidence":0.92,"probabilities":{"TYPE_TEXT":0.93,"CLICK":0.04,"BLOCKED":0.02,…}},
+    "type_text_target": {"type":"choice","choice":"15",       "confidence":0.95,"probabilities":{"15":0.97,"16":0.02,"17":0.01}},
+    "click_target":     {"type":"choice","choice":"15",       "confidence":0.85,"probabilities":{"15":0.87,"16":0.10,"17":0.02,…}}   // computed but unused
+  },
+  "usage": {"input_tokens": 2400, "output_tokens": 180}
+}
+```
+
+The agent reads `operation`, then **only** the matching head (`type_text_target`), validates it
+(choice ∈ offered ids, probabilities over exactly those ids, sum ≈ 1, argmax = choice) and maps
+index `15` back to action `e15` (`kind: fill`, node 31). `click_target` is never looked at.
+
+**3. TYPE_TEXT only — one request to the text helper, ~600–900 ms**
+
+`POST $TEXT_MODEL_BASE_URL/chat/completions` (OpenAI-compatible, `response_format: json_object`):
+
+```jsonc
+{"model":"inception/mercury-2.5","max_tokens":1024,"response_format":{"type":"json_object"},"reasoning":{"enabled":false},
+ "messages":[
+   {"role":"system","content":"Return a JSON object with exactly one key, text: the exact string to enter in the selected field. … If a required value is missing, return {\"text\": null}."},
+   {"role":"user","content":"{\"goal\":\"Find one-way flights from Zurich to London …\",\"field\":{\"label\":\"Where from?\",\"role\":\"combobox\",\"value\":\"Da Nang\"},\"page\":{\"title\":\"…\",\"text\":\"…\"},\"recent_actions\":[…]}"}
+ ]}
+```
+
+Response content: `{"text":"Zurich"}` (433 in / 78 out tokens, 739 ms). Anything other than a single
+non-empty `text` string → nothing is typed. The value is cached and reused only if the *entire* helper
+input is byte-identical after a stale retry.
+
+**4. fresh? → act — 5–7 CDP calls, ~35 ms**
+
+```
+Runtime.evaluate  [pageKey(), guard(node 31)]      == observation's page_key + guards["31"]?  else ErrStale
+Runtime.evaluate  resolve(e15)                      connected · visible · not disabled/readonly ·
+                                                    centre inside viewport · elementFromPoint hits it → {x, y}
+Input.dispatchMouseEvent mousePressed  (x, y)
+Input.dispatchMouseEvent mouseReleased (x, y)
+Input.dispatchKeyEvent   keyDown ⌘A / ^A, commands:["selectAll"]
+Input.dispatchKeyEvent   keyUp
+Input.insertText         "Zurich"
+```
+
+Coordinates come from the live DOM at this instant, never from the model. A click/select/fill whose
+guard changed, or whose target is covered, returns `ErrStale`: the decision is dropped, the page is
+re-observed, and the loop continues — a mutation is never retried.
+
+**5. settle — one CDP call, 50–200 ms**
+
+`Runtime.evaluate(awaitPromise)`: ≤ 2 animation frames or 50 ms; after typing into an editable
+combobox, until a `[role=option]` is visible, capped at 200 ms. Then the step is logged
+(`history` gets `{"action":"Where from?","kind":"fill","text":"Zurich","page_changed":true}`) and the
+loop goes back to **1**.
+
+Per step: **≈ 8 CDP calls, 1 Jev call, 0–1 text-helper call.** Per run (Flights): ~220 CDP calls,
+18–19 Jev calls, 2 text calls.
+
+### Design rules
+
+- **Snapshot** (`internal/snapshot/snapshot.js`) is atomic and viewport-only, so the model's context
+  stays small and every candidate is something the user could actually see and hit.
+- **Decision** (`internal/jev`): speculative target heads mean one round trip per decision.
+- **Execute** (`internal/browser`): re-check freshness (scoped guard for click/fill/select, full
+  marker for DONE/BLOCKED), re-resolve geometry, hit-test, then real input events. Native `<select>`
+  is set in page and its change event confirmed.
 - **Budgets**: 60 actions, 120 decisions, three consecutive no-change actions → `blocked`.
 
 Model output never becomes a selector, coordinate, script or shell command.
