@@ -340,17 +340,26 @@ func actionJSON(a snapshot.Action) string {
 	return string(b)
 }
 
-// resolveJS re-checks the observed node and returns its centre, or null.
-// For select it also applies the value inside the page.
+// resolveJS re-checks the observed node and returns a point on it that is
+// actually clickable, or null. The centre is tried first; if a floating
+// widget covers it, a few points inside the rect are tried too, as a person
+// would click the uncovered edge of a button. For select it also applies the
+// value inside the page.
 func resolveJS(a snapshot.Action) string {
 	return `(action => {
   const e=window.__jevFast?.nodes.get(action.node);
   if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
       !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
   if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-  const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-  if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-  if (!e.contains(document.elementFromPoint(x,y))) return null;
+  const r=e.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  const inside=(x,y)=>x>=0 && y>=0 && x<innerWidth && y<innerHeight && e.contains(document.elementFromPoint(x,y));
+  let x=r.x+r.width/2, y=r.y+r.height/2, hit=inside(x,y);
+  if (!hit) for (const [fx,fy] of [[0.15,0.5],[0.85,0.5],[0.5,0.2],[0.5,0.8],[0.15,0.2],[0.85,0.8]]) {
+    const px=r.x+r.width*fx, py=r.y+r.height*fy;
+    if (inside(px,py)) { x=px; y=py; hit=true; break; }
+  }
+  if (!hit) return null;
   if (action.kind==='select') {
     if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
         !o.disabled && !o.closest('optgroup[disabled]'))) return null;

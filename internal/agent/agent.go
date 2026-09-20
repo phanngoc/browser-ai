@@ -114,9 +114,10 @@ type Agent struct {
 	pending *pendingText
 	res     Result
 	started time.Time
-	// refused counts consecutive executor refusals per target (node+kind).
-	// A target refused RefuseLimit times is withheld from the next decision,
-	// so the model cannot pick a covered button forever. Cleared on execution.
+	// refused counts executor refusals per target (node+kind+label) on the
+	// current document. A target refused RefuseLimit times is withheld from
+	// later decisions, so the model cannot pick a covered button forever.
+	// Cleared when the URL changes.
 	refused map[string]int
 }
 
@@ -268,7 +269,6 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	a.pending = nil
-	a.refused = map[string]int{}
 	a.res.Decisions[recIdx].Executed = true
 
 	// Log execution before observing: a navigation must not erase the action.
@@ -286,6 +286,9 @@ func (a *Agent) tick(ctx context.Context) (bool, error) {
 	}
 	tm.Snapshot += snap
 	changed := next.Fingerprint != page.Fingerprint
+	if next.URL != page.URL {
+		a.refused = map[string]int{} // new document: refused targets start over
+	}
 	a.res.Steps[idx].PageChanged = &changed
 	a.recent[idx].PageChanged = &changed
 	a.res.Steps[idx].URL = next.URL

@@ -321,6 +321,21 @@ func TestOcclusionRefused(t *testing.T) {
 	}
 }
 
+func TestPartiallyCoveredTargetStillClickable(t *testing.T) {
+	e := setup(t)
+	p := e.observe()
+	submit := find(t, p, "click", "Submit")
+	// A floating widget over the centre of the button, like a chat bubble.
+	e.eval(`(() => { const r=document.getElementById('submit').getBoundingClientRect(), w=document.getElementById('widget');
+	  w.style.left=(r.x+r.width/2-20)+'px'; w.style.top=(r.y+r.height/2-20)+'px'; w.style.display='block'; })()`)
+	if _, err := e.b.Act(e.ctx, submit, p, ""); err != nil {
+		t.Fatalf("edge of a partially covered button should be clickable: %v", err)
+	}
+	if v := e.eval("typeof window.__submitted"); v != `"boolean"` {
+		t.Fatal("click did not reach the button")
+	}
+}
+
 func TestScroll(t *testing.T) {
 	e := setup(t)
 	p := e.observe()
