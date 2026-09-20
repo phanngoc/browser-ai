@@ -142,3 +142,19 @@ to `api.typesafe.ai`.
 
 Per agent step the browser costs ≈ 6 ms snapshot + a few CDP calls at ~0.2 ms each, plus a
 50–200 ms settle wait that is deliberate. Everything else is model latency.
+
+## Case study: tiki.vn "add an iPhone 17 to the cart" (2026-09-20, Jev, attached Chrome)
+
+Goal in English against a Vietnamese UI. Four runs, each one found something real:
+
+| run | result | what happened |
+|---|---|---|
+| 1 | error, 0 steps | text helper (mercury-2.5) returned no value for the search box — its accessible name was the rotating promo placeholder "Freeship đơn từ 45k" plus 6 KB of Vietnamese page text. Same helper answers "iPhone 17" on a trimmed context. Switched the helper to gemini-2.5-flash-lite for the rest. |
+| 2 | blocked, 1 step, **49 stale** | Jev chose CLICK "Tìm kiếm" 47 times; the executor refused every one. Root cause found with `bench churn --check`: not the guard — the button's centre was under a floating widget, and refused decisions were invisible to the model, so it repeated itself. |
+| 3 | blocked, 17 steps | "Tìm kiếm" now clicked; product opened; "Thêm vào giỏ" refused 25× (centre covered by the chat widget at 1120 px); the model fell back to the quantity "+" button ("add-icon") 14 times. Refusal counter was being reset by every unrelated execution. |
+| 4 | **DONE in 5.06 s, 4 steps** | search → results → product → "Thêm vào giỏ" clicked via an uncovered edge point. tiki then demanded a login; the model declared DONE on the login modal — a false DONE, caught by checking the page. Completing the task needs a logged-in profile. |
+
+Fixes that came out of it (all in `internal/browser` / `internal/agent`): off-centre hit-test
+points for partially covered targets; refusal reasons recorded in the trace; a target refused twice
+on the same document is withheld from later decisions; `bench churn` for diagnosing pages that never
+hold still. Jev's share stayed at ~320 ms/decision throughout; the browser side of run 4 was 0.24 s.
