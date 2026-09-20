@@ -84,7 +84,11 @@ func main() {
 			base = firstEnv("CHOOSER_BASE_URL", "TEXT_MODEL_BASE_URL")
 		}
 		lc := llmchooser.New(firstEnv("CHOOSER_API_KEY", "TEXT_MODEL_API_KEY"), base, model)
+		lc.Reasoning = os.Getenv("CHOOSER_REASONING")
 		chooser, warmChooser, chooserName = lc, lc.Warm, "llm "+lc.Model
+		if lc.Reasoning != "" {
+			chooserName += " (reasoning " + lc.Reasoning + ")"
+		}
 	default:
 		fatal(fmt.Errorf("unknown --chooser %q", which))
 	}

@@ -29,6 +29,9 @@ type Client struct {
 	Model   string
 	// MaxText caps the visible page text sent per decision.
 	MaxText int
+	// Reasoning overrides the provider-specific "lowest reasoning" default
+	// (e.g. "low" for OpenAI gpt-5 models). Empty keeps the default.
+	Reasoning string
 }
 
 // New builds a client. Defaults: OpenRouter, gemini-2.5-flash-lite.
@@ -147,6 +150,9 @@ func (c *Client) requestBody(messages []map[string]string) map[string]any {
 		body["max_completion_tokens"] = 300
 		if strings.HasPrefix(c.Model, "gpt-5") || strings.HasPrefix(c.Model, "o") {
 			body["reasoning_effort"] = lowestReasoning(c.Model)
+			if c.Reasoning != "" {
+				body["reasoning_effort"] = c.Reasoning
+			}
 		} else {
 			body["temperature"] = 0
 		}
@@ -155,6 +161,9 @@ func (c *Client) requestBody(messages []map[string]string) map[string]any {
 	body["max_tokens"] = 300
 	body["temperature"] = 0
 	body["reasoning"] = map[string]any{"enabled": false}
+	if c.Reasoning != "" && c.Reasoning != "none" {
+		body["reasoning"] = map[string]any{"effort": c.Reasoning}
+	}
 	return body
 }
 
