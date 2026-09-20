@@ -37,45 +37,72 @@ Per agent step the browser costs ≈ 6 ms snapshot + a few CDP calls at ~0.2 ms 
 Everything else in a step is the model round-trip (reference reports ~170 ms for Jev) and
 settle waits (50–200 ms). Reference Python run: 101 CDP calls per 7 s task.
 
-## End-to-end with the LLM fallback chooser (`--chooser llm`)
+## End-to-end — Jev vs a general LLM (2026-09-20)
 
-Same date/machine. No TypeSafe key yet, so decisions come from a general LLM via OpenRouter
-(`google/gemini-2.5-flash-lite`), text from `inception/mercury-2.5`. **These are not Jev numbers**:
-the loop, snapshot and executor are the same, only the decision maker is ~8× slower.
+Same machine, headless Chrome 153 launched over the pipe, identical goals to the reference.
+Every ✓ is verified from the final page (URL/title, or "N results returned" in the visible text),
+never from the model's DONE. Text for `TYPE_TEXT` comes from `inception/mercury-2.5` in all runs.
 
-### Wikipedia → "Gödel's incompleteness theorems", headless, launched over pipe
+### Headline
 
-| run | result | steps | decisions (stale) | total | chooser total (avg/call) | text | browser (snap+act+settle) | CDP calls |
+| task | decision maker | pass | median total | per decision | decisions | browser share |
+|---|---|---|---|---|---|---|
+| Google Flights ZRH→LON one-way, verify results visible | **Jev** (`jev-1.13.0`) | **3/3** | **9.57 s** | **330 ms** | 18–19 | 1.2 s |
+| | gemini-2.5-flash (via OpenRouter) | 1/1 | 22.7 s | 1.06 s | 17 | 1.3 s |
+| | gemini-2.5-flash-lite | **0/1** (false DONE) | 33.2 s | 2.28 s | 13 | 0.9 s |
+| Wikipedia → Gödel article | **Jev** | **3/3** | **3.44 s** | **330 ms** | 6 | 0.6 s |
+| | gemini-2.5-flash-lite | 3/3 | 7.05 s | 0.9–1.4 s | 4–6 | 0.6 s |
+| Reference (browser-use/jev-ultrafast, Python, Jev from Europe) | Jev | 3/3 | 7.09 s / 2.80 s | ~170 ms | — | — |
+
+**Jev is 3–7× faster per decision than a general LLM and the only one that got Flights right every
+time.** The gap to the reference's 7.09 s is network: this machine is in Vietnam.
+
+### Where a Jev decision's 330 ms goes
+
+`curl` timings to `api.typesafe.ai` from here: TCP connect **~200 ms**, TLS +200 ms (paid once,
+connection is kept alive), warm call total **350 ms**. So of each decision ≈ 200 ms is the round trip
+across the Pacific and **≈ 130 ms is Jev itself** — consistent with the ~170 ms the reference sees
+from Europe. Run this from a US/EU box and the Flights run projects to ≈ 6.5 s.
+
+### Google Flights with Jev, run by run
+
+| run | steps | decisions (stale) | total | Jev total (avg) | text | browser | CDP calls | results |
 |---|---|---|---|---|---|---|---|---|
-| 1 | done ✓ | 2 | 4 (1) | 7.55 s | 5.44 s (1.36 s) | 0.77 s | 0.75 s | 63 |
-| 2 | done ✓ | 2 | 6 (3) | 7.05 s | 5.31 s (0.89 s) | 0.97 s | 0.55 s | 44 |
-| 3 | done ✓ | 2 | 6 (3) | 6.55 s | 5.27 s (0.88 s) | 0.55 s | 0.54 s | 65 |
+| 1 | 10 | 18 (7) | 9.68 s | 5.86 s (326 ms) | 1.31 s | 1.14 s | 229 | 16 ✓ |
+| 2 | 10 | 19 (8) | 9.55 s | 6.13 s (323 ms) | 1.15 s | 1.28 s | 235 | 16 ✓ |
+| 3 | 10 | 18 (7) | 9.57 s | 6.02 s (334 ms) | 1.28 s | 1.18 s | 201 | 16 ✓ |
 
-Median **7.05 s**, 3/3 verified by final URL. Reference (Jev, Python): 2.80 s.
-~75 % of wall time is the LLM deciding; the browser side is ≈ 0.6 s per run including a real
-page load. Stale decisions are frequent because a 1 s decision gives the page time to change
-(autocomplete appearing); each stale costs one more model call.
+Sequence every time: ticket type → One way → type Zurich → pick "Zürich, Switzerland" → type London →
+pick "London, United Kingdom" → open Departure → 20 Sep → Done → Search → results → DONE.
+Two `TYPE_TEXT` calls to the text helper cost more (1.2 s) than the whole browser side (1.2 s).
 
-Read-through: with Jev's ~170 ms decisions the same run would be ≈ 0.6 s browser + 2–4 × 0.17 s
-decisions + 0.5–0.8 s text ≈ **2–2.5 s**, in line with the reference's 2.8 s.
+### Wikipedia with Jev
 
-### Google Flights, one-way ZRH → LON on 2026-09-20, headless
+| run | decisions (stale) | total | Jev (avg) | text | browser |
+|---|---|---|---|---|---|
+| 1 | 6 (3) | 4.18 s | 2.15 s (358 ms) | 1.21 s | 0.62 s |
+| 2 | 6 (3) | 3.38 s | 1.95 s (326 ms) | 0.57 s | 0.61 s |
+| 3 | 6 (3) | 3.44 s | 1.93 s (322 ms) | 0.66 s | 0.62 s |
 
-Goal text identical to the reference. Outcome verified from the final page, not from the model's DONE.
+Run-to-run variance is almost entirely the text helper (0.57–1.21 s for one call).
 
-| run | chooser model | result | steps | decisions (stale) | total | chooser (avg/call) | text | browser | CDP |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | gemini-2.5-flash-lite | **false DONE ✗** | 9 | 13 (3) | 33.2 s | 29.6 s (2.28 s) | 0.9 s | 0.9 s | 231 |
-| 2 | gemini-2.5-flash | done ✓ (21 results, BA/easyJet) | 10 | 17 (6) | 22.7 s | 18.1 s (1.06 s) | 1.6 s | 1.3 s | 209 |
+### What we tried against stale decisions (and what the data said)
 
-Run 1: the small model opened the *multi-airport origin* dialog and typed "London" into
-"Where else?", then declared DONE on the empty search form (origin still the geo default "Da Nang").
-The executor did exactly what was chosen; the policy was wrong. This is why DONE is never trusted.
+A decision is *stale* when the page changed between observation and execution; the executor refuses
+it and one more model call is spent. 40 % of Flights decisions were stale.
 
-Run 2: correct sequence — ticket type → One way → type Zurich → pick suggestion → type London →
-pick suggestion → open date → 20 Sep → Done → Search → results visible → DONE.
-Reference (Jev, Python): 7.09 s median for the same task, ~101 CDP calls.
+| change | Flights stale | Flights total | Wikipedia total | kept? |
+|---|---|---|---|---|
+| baseline | 7–8 / 18–19 | 9.57 s | 3.44 s | — |
+| re-read until two markers agree (≤3× after 2 rAF) | 6–8 | 9.65 s | 3.38 s | **no** — off by default (`Options.StableChecks`) |
+| WAIT never stale + scoped guard for TYPE_TEXT + retry text helper once | 4–7 | 9.59 s | 3.82 s | yes — same time, honest history |
 
-Browser-side cost for the whole 10-step run was **1.3 s** (snapshot 0.13 s, act 0.53 s, settle 0.66 s).
-Everything else was model latency. Swap in Jev at ~0.17 s/decision and the same run projects to
-≈ 1.3 s + 17 × 0.17 s + 1.6 s text ≈ **5–6 s** — the reference's 7 s is consistent with that.
+Neither moved wall time: the page changes *during* the 330 ms model call, and while results load the
+model keeps choosing WAIT (330 ms each). Stale is a symptom of network latency to the model, not of
+the browser layer. The total is bounded by `decisions × latency` — the only lever left is being closer
+to `api.typesafe.ai`.
+
+## Reading
+
+Per agent step the browser costs ≈ 6 ms snapshot + a few CDP calls at ~0.2 ms each, plus a
+50–200 ms settle wait that is deliberate. Everything else is model latency.
