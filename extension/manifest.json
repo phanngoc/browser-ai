@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "browser-ai bridge",
+  "version": "0.1.0",
+  "description": "Lets a local browser-ai agent drive a tab in this Chrome through chrome.debugger. Connects only to 127.0.0.1.",
+  "permissions": ["debugger", "tabs", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "browser-ai bridge" },
+  "icons": { "16": "icon.png", "48": "icon.png", "128": "icon.png" }
+}

@@ -3,6 +3,7 @@
 package chrome
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phanngoc/browser-ai/internal/cdp"
@@ -26,6 +28,9 @@ type Options struct {
 	Args        []string // extra flags
 	Width       int
 	Height      int
+	// LoadExtension loads an unpacked extension directory (and disables all
+	// others), for tests and benchmarks of the extension bridge.
+	LoadExtension string
 }
 
 // Browser is a Chrome we own.
@@ -41,6 +46,30 @@ type Browser struct {
 	dir     string
 	ownsDir bool
 	waitErr chan error
+	stderr  *tailBuffer
+}
+
+// tailBuffer keeps the last few KB of Chrome's stderr for error messages.
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf.Write(p)
+	if t.buf.Len() > 4096 {
+		b := t.buf.Bytes()
+		t.buf = *bytes.NewBuffer(append([]byte(nil), b[len(b)-4096:]...))
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.TrimSpace(t.buf.String())
 }
 
 // Version is the Browser.getVersion result.
@@ -95,6 +124,19 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 	if opts.Headless {
 		args = append(args, "--headless=new")
 	}
+	// Chrome for Testing has no SUID sandbox helper; on CI runners with
+	// restricted user namespaces it aborts at startup without this.
+	if os.Getenv("BROWSER_AI_NO_SANDBOX") != "" || os.Getenv("CI") != "" {
+		args = append(args, "--no-sandbox")
+	}
+	if opts.LoadExtension != "" {
+		abs, err := filepath.Abs(opts.LoadExtension)
+		if err != nil {
+			b.cleanupDir()
+			return nil, err
+		}
+		args = append(args, "--load-extension="+abs, "--disable-extensions-except="+abs)
+	}
 	if opts.UseWS {
 		args = append(args, "--remote-debugging-port=0")
 	} else {
@@ -105,6 +147,27 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "GOOGLE_API_KEY=no", "GOOGLE_DEFAULT_CLIENT_ID=no", "GOOGLE_DEFAULT_CLIENT_SECRET=no")
+	// Chrome's stderr goes through our own pipe: with a plain io.Writer,
+	// exec.Wait would block until every renderer (which inherits the fd)
+	// exits. We read the tail ourselves and never wait on it.
+	b.stderr = &tailBuffer{}
+	if errR, errW, err := os.Pipe(); err == nil {
+		cmd.Stderr = errW
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := errR.Read(buf)
+				if n > 0 {
+					_, _ = b.stderr.Write(buf[:n])
+				}
+				if err != nil {
+					errR.Close()
+					return
+				}
+			}
+		}()
+		defer errW.Close() // parent copy; Chrome keeps its own
+	}
 	b.cmd = cmd
 
 	var transport cdp.Transport
@@ -159,7 +222,11 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 	defer cancel()
 	res, err := b.Conn.Call(vctx, "", "Browser.getVersion", nil)
 	if err != nil {
+		tail := b.stderr.String()
 		b.Close()
+		if tail != "" {
+			return nil, fmt.Errorf("chrome: getVersion: %w\nchrome stderr:\n%s", err, tail)
+		}
 		return nil, fmt.Errorf("chrome: getVersion: %w", err)
 	}
 	b.Startup = time.Since(started)
