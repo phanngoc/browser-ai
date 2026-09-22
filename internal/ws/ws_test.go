@@ -175,3 +175,50 @@ func TestBadScheme(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestUpgradeServerSide(t *testing.T) {
+	// Real server built from Upgrade, real client from Dial.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := Upgrade(w, r)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.Ping([]byte("hi"))
+		for {
+			msg, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := c.WriteMessage(append([]byte("echo:"), msg...)); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	c := dial(t, srv)
+	defer c.Close()
+	for _, n := range []int{1, 200, 70000} {
+		msg := strings.Repeat("y", n)
+		if err := c.WriteMessage([]byte(msg)); err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.ReadMessage()
+		if err != nil || string(got) != "echo:"+msg {
+			t.Fatalf("n=%d: %v (%d bytes)", n, err, len(got))
+		}
+	}
+}
+
+func TestUpgradeRejectsPlainHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := Upgrade(w, r); err == nil {
+			t.Error("expected error")
+		}
+	}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	if err != nil || resp.StatusCode != 400 {
+		t.Fatalf("%v %v", err, resp)
+	}
+}

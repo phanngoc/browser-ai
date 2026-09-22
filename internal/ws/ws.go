@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 const guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -35,14 +36,48 @@ const (
 // ErrClosed is returned after the peer sent a close frame.
 var ErrClosed = errors.New("ws: closed")
 
-// Conn is a client WebSocket connection.
+// Conn is a WebSocket connection. Client connections mask outgoing frames;
+// server connections (from Upgrade) send them unmasked and require masked
+// input, per RFC 6455.
 type Conn struct {
 	nc      net.Conn
 	r       *bufio.Reader
 	wmu     sync.Mutex
 	closed  bool
 	maxSize int64
+	server  bool
 }
+
+// Upgrade completes the server side of the opening handshake on an HTTP
+// request and returns the connection. The ResponseWriter must support
+// hijacking. The caller has already checked path, token and Origin.
+func Upgrade(w http.ResponseWriter, req *http.Request) (*Conn, error) {
+	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") || req.Header.Get("Sec-WebSocket-Key") == "" {
+		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
+		return nil, errors.New("ws: not a websocket upgrade")
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijack unsupported", http.StatusInternalServerError)
+		return nil, errors.New("ws: hijack unsupported")
+	}
+	nc, rw, err := hj.Hijack()
+	if err != nil {
+		return nil, err
+	}
+	sum := sha1.Sum([]byte(req.Header.Get("Sec-WebSocket-Key") + guid))
+	resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " +
+		base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
+	if _, err := io.WriteString(nc, resp); err != nil {
+		nc.Close()
+		return nil, err
+	}
+	return &Conn{nc: nc, r: rw.Reader, maxSize: 256 << 20, server: true}, nil
+}
+
+// Ping sends a ping control frame (used by servers to keep an extension's
+// service worker awake).
+func (c *Conn) Ping(payload []byte) error { return c.writeFrame(opPing, payload) }
 
 // Dial connects to a ws:// or wss:// URL and completes the opening handshake.
 func Dial(ctx context.Context, rawURL string) (*Conn, error) {
@@ -117,7 +152,7 @@ func Dial(ctx context.Context, rawURL string) (*Conn, error) {
 		nc.Close()
 		return nil, errors.New("ws: bad Sec-WebSocket-Accept")
 	}
-	_ = nc.SetDeadline(zeroTime)
+	_ = nc.SetDeadline(time.Time{})
 	return &Conn{nc: nc, r: r, maxSize: 256 << 20}, nil
 }
 
@@ -213,6 +248,10 @@ func (c *Conn) readFrame() (fin bool, op byte, payload []byte, err error) {
 		err = fmt.Errorf("ws: frame too large (%d)", n)
 		return
 	}
+	if c.server && !masked {
+		err = errors.New("ws: client frame not masked")
+		return
+	}
 	var mask [4]byte
 	if masked {
 		if _, err = io.ReadFull(c.r, mask[:]); err != nil {
@@ -242,14 +281,23 @@ func (c *Conn) writeFrameLocked(op byte, p []byte) error {
 	n := len(p)
 	buf := make([]byte, 0, 14+n)
 	buf = append(buf, 0x80|op)
+	var maskBit byte
+	if !c.server {
+		maskBit = 0x80
+	}
 	switch {
 	case n < 126:
-		buf = append(buf, 0x80|byte(n))
+		buf = append(buf, maskBit|byte(n))
 	case n < 1<<16:
-		buf = append(buf, 0x80|126, byte(n>>8), byte(n))
+		buf = append(buf, maskBit|126, byte(n>>8), byte(n))
 	default:
-		buf = append(buf, 0x80|127)
+		buf = append(buf, maskBit|127)
 		buf = binary.BigEndian.AppendUint64(buf, uint64(n))
+	}
+	if c.server {
+		buf = append(buf, p...)
+		_, err := c.nc.Write(buf)
+		return err
 	}
 	var mask [4]byte
 	if _, err := rand.Read(mask[:]); err != nil {
@@ -268,6 +316,9 @@ func applyMask(p []byte, mask [4]byte) {
 		p[i] ^= mask[i&3]
 	}
 }
+
+// SetReadDeadline bounds the next reads on the underlying socket.
+func (c *Conn) SetReadDeadline(t time.Time) error { return c.nc.SetReadDeadline(t) }
 
 // Read implements cdp.Transport.
 func (c *Conn) Read() ([]byte, error) { return c.ReadMessage() }
