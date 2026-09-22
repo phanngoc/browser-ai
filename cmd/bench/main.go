@@ -143,7 +143,7 @@ func viaExtension(ctx context.Context, headless bool) (*endpoint, error) {
 		srv.Close()
 		return nil, err
 	}
-	actx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	client, err := srv.Accept(actx)
 	if err != nil {

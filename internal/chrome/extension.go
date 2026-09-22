@@ -22,7 +22,7 @@ var ErrExtensionNotLoaded = errors.New("chrome: bridge extension was not loaded 
 // token and tells it to connect. This is how tests and benchmarks avoid the
 // popup; a user does the same by hand once.
 func ConfigureExtension(ctx context.Context, conn *cdp.Conn, port int, token string) error {
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var swTarget, extID string
 	var seen []string
 	for time.Now().Before(deadline) && swTarget == "" {
