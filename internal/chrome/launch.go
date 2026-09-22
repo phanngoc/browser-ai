@@ -147,8 +147,27 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "GOOGLE_API_KEY=no", "GOOGLE_DEFAULT_CLIENT_ID=no", "GOOGLE_DEFAULT_CLIENT_SECRET=no")
+	// Chrome's stderr goes through our own pipe: with a plain io.Writer,
+	// exec.Wait would block until every renderer (which inherits the fd)
+	// exits. We read the tail ourselves and never wait on it.
 	b.stderr = &tailBuffer{}
-	cmd.Stderr = b.stderr
+	if errR, errW, err := os.Pipe(); err == nil {
+		cmd.Stderr = errW
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := errR.Read(buf)
+				if n > 0 {
+					_, _ = b.stderr.Write(buf[:n])
+				}
+				if err != nil {
+					errR.Close()
+					return
+				}
+			}
+		}()
+		defer errW.Close() // parent copy; Chrome keeps its own
+	}
 	b.cmd = cmd
 
 	var transport cdp.Transport
@@ -227,6 +246,7 @@ func waitActivePort(ctx context.Context, dir string, exited <-chan error) (strin
 			return "", ctx.Err()
 		case err := <-exited:
 			return "", fmt.Errorf("chrome: exited before opening a debugging port: %v", err)
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 	return "", errors.New("chrome: DevToolsActivePort not written within 15s")
