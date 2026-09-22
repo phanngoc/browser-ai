@@ -9,6 +9,18 @@ and others solve this the same way: **a Chrome extension is the bridge**. It run
 real profile (cookies, sessions, extensions, password manager), needs one install and one click, and
 can use `chrome.debugger` — the same CDP surface we already speak — on any tab.
 
+## Prior art
+
+| | transport | tabs | approval |
+|---|---|---|---|
+| **Claude in Chrome / Claude Code** | Native Messaging: Chrome spawns a host binary registered in `NativeMessagingHosts/*.json`, JSON over stdin/stdout | on demand, per site permission dialog | once per site |
+| **OpenClaw browser relay** | extension is a WebSocket **client** to a loopback relay (`127.0.0.1:18792`) | auto-attaches every eligible tab, re-attaches on reload | toolbar toggle |
+| **browser-ai (this)** | extension is a ws client to `cmd/agent` (loopback, token) — the OpenClaw shape, zero install steps beyond loading the extension | **only tabs the agent creates** by default; `--tab current` to drive the tab the user is on | one click in the popup per agent session |
+
+Native Messaging is the better long-term default (Chrome launches the bridge, nothing to start by
+hand) but needs a host manifest per browser/OS and a host binary; it is scheduled as M6, behind the
+same `cdp.Transport` so nothing above it changes.
+
 ## Shape
 
 ```
@@ -52,6 +64,15 @@ pasted once into the extension options (stored in `chrome.storage.local`); one c
 Model output still never becomes selectors or code — the extension executes only CDP methods the
 agent already uses (`Runtime.evaluate` with our embedded scripts, `Input.*`, `Emulation.*`,
 `Page.captureScreenshot`).
+
+## Tab model
+
+- Default: the agent asks for a new background tab (`Target.createTarget`) and closes it at the end.
+  The user's tabs are never attached. Chrome shows its "browser-ai is debugging this tab" bar on
+  that one tab only.
+- `--tab current`: attach the active tab instead — for tasks that need state already on screen.
+  The agent still refuses to navigate away unless the goal says so.
+- Never `attach` to every tab (OpenClaw does; we don't need it and it multiplies debugger bars).
 
 ## Extension (unpacked, MV3, no build step)
 
