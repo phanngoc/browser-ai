@@ -61,6 +61,21 @@ func (c *Conn) NewPage(ctx context.Context, url string, background bool) (*Sessi
 	return c.Session(a.SessionID, t.TargetID), nil
 }
 
+// AttachExisting attaches a flat session to a target that already exists.
+func (c *Conn) AttachExisting(ctx context.Context, targetID string) (*Session, error) {
+	res, err := c.Call(ctx, "", "Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true})
+	if err != nil {
+		return nil, fmt.Errorf("attachToTarget: %w", err)
+	}
+	var a struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(res, &a); err != nil {
+		return nil, err
+	}
+	return c.Session(a.SessionID, targetID), nil
+}
+
 // Close closes the page target owned by this session.
 func (s *Session) Close(ctx context.Context) error {
 	if s.TargetID == "" {

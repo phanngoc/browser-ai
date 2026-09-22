@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/phanngoc/browser-ai/internal/cdp"
 	"github.com/phanngoc/browser-ai/internal/chrome"
+	"github.com/phanngoc/browser-ai/internal/extbridge"
 	"github.com/phanngoc/browser-ai/internal/snapshot"
 )
 
@@ -34,6 +36,7 @@ func main() {
 	interval := fs.Duration("interval", 300*time.Millisecond, "gap between churn observations")
 	fill := fs.String("fill", "", "churn: type TEXT into the field whose label contains LABEL first, as LABEL=TEXT")
 	check := fs.String("check", "", "churn: after --fill, run the executor's freshness check for the click whose label contains this, once per interval")
+	viaExt := fs.Bool("via-extension", false, "rtt: also measure through the bridge extension (launches a Chrome with extension/ loaded)")
 	_ = fs.Parse(os.Args[2:])
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -41,7 +44,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "rtt":
-		err = benchRTT(ctx, or(*n, 1000), *attach, *headless, *asJSON)
+		err = benchRTT(ctx, or(*n, 1000), *attach, *headless, *asJSON, *viaExt)
 	case "snapshot":
 		err = benchSnapshot(ctx, or(*n, 20), *url, *attach, *headless, *asJSON)
 	case "coldstart":
@@ -121,7 +124,39 @@ func (s stats) row(name string) string {
 	return fmt.Sprintf("%-32s n=%-5d min %-9s p50 %-9s p95 %-9s p99 %-9s max %-9s", name, s.N, s.Min, s.P50, s.P95, s.P99, s.Max)
 }
 
-func benchRTT(ctx context.Context, n int, attach string, headless, asJSON bool) error {
+// viaExtension launches a Chrome with the bridge extension loaded, configures
+// it over the pipe and returns an endpoint that speaks through the extension.
+func viaExtension(ctx context.Context, headless bool) (*endpoint, error) {
+	srv, err := extbridge.Listen("127.0.0.1:0", extbridge.NewToken())
+	if err != nil {
+		return nil, err
+	}
+	b, err := chrome.Launch(ctx, chrome.Options{Headless: headless, LoadExtension: "extension"})
+	if err != nil {
+		srv.Close()
+		return nil, err
+	}
+	_, portStr, _ := strings.Cut(srv.Addr, ":")
+	port, _ := strconv.Atoi(portStr)
+	if err := chrome.ConfigureExtension(ctx, b.Conn, port, srv.Token); err != nil {
+		b.Close()
+		srv.Close()
+		return nil, err
+	}
+	actx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	client, err := srv.Accept(actx)
+	if err != nil {
+		b.Close()
+		srv.Close()
+		return nil, fmt.Errorf("extension did not connect: %w", err)
+	}
+	conn := cdp.NewConn(client)
+	return &endpoint{name: "extension (chrome.debugger hop)", conn: conn, version: b.Version.Product,
+		close: func() { conn.Close(); srv.Close(); b.Close() }}, nil
+}
+
+func benchRTT(ctx context.Context, n int, attach string, headless, asJSON, viaExt bool) error {
 	var eps []*endpoint
 	if attach != "" {
 		e, err := attachTo(ctx, attach)
@@ -137,6 +172,13 @@ func benchRTT(ctx context.Context, n int, attach string, headless, asJSON bool) 
 			}
 			eps = append(eps, e)
 		}
+	}
+	if viaExt {
+		e, err := viaExtension(ctx, headless)
+		if err != nil {
+			return err
+		}
+		eps = append(eps, e)
 	}
 	defer func() {
 		for _, e := range eps {

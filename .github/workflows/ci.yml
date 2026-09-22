@@ -17,6 +17,12 @@ jobs:
         run: go vet ./...
       - name: build
         run: go build ./...
+      - name: extension syntax
+        run: node --check extension/background.js && node --check extension/popup.js && python3 -c "import json;json.load(open('extension/manifest.json'))"
+      - name: Chrome for Testing
+        # Branded Chrome ignores --load-extension; Chrome for Testing runs the extension e2e.
+        run: |
+          npx --yes @puppeteer/browsers install chrome@stable --path "$HOME/.cache/cft" >/dev/null
+          echo "CHROME_PATH=$(find "$HOME/.cache/cft" -type f -name chrome -path '*chrome-linux64*' | head -1)" >> "$GITHUB_ENV"
       - name: test
-        # ubuntu-latest ships google-chrome; Chrome-dependent tests skip when absent.
         run: go test -race -count=1 ./...

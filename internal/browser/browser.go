@@ -58,6 +58,16 @@ type Browser struct {
 // New opens a background tab, applies viewport/focus emulation, navigates and
 // waits for the document to be complete.
 func New(ctx context.Context, conn *cdp.Conn, url string, opts Options) (*Browser, error) {
+	sess, err := conn.NewPage(ctx, "about:blank", true)
+	if err != nil {
+		return nil, err
+	}
+	return NewOnSession(ctx, sess, url, opts)
+}
+
+// NewOnSession drives an already attached page. url "" keeps the current
+// document (used for --tab current); otherwise it navigates there.
+func NewOnSession(ctx context.Context, sess *cdp.Session, url string, opts Options) (*Browser, error) {
 	w, h := opts.Width, opts.Height
 	if w == 0 {
 		w = 1120
@@ -68,10 +78,6 @@ func New(ctx context.Context, conn *cdp.Conn, url string, opts Options) (*Browse
 	if opts.LoadTimeout == 0 {
 		opts.LoadTimeout = 15 * time.Second
 	}
-	sess, err := conn.NewPage(ctx, "about:blank", true)
-	if err != nil {
-		return nil, err
-	}
 	b := &Browser{sess: sess, stableChecks: opts.StableChecks}
 	if _, err := sess.Call(ctx, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width": w, "height": h, "deviceScaleFactor": 1, "mobile": false}); err != nil {
@@ -80,6 +86,9 @@ func New(ctx context.Context, conn *cdp.Conn, url string, opts Options) (*Browse
 	}
 	// Keep rAF and menus rendering in a tab the user is not looking at.
 	_, _ = sess.Call(ctx, "Emulation.setFocusEmulationEnabled", map[string]any{"enabled": true})
+	if url == "" {
+		return b, nil
+	}
 	if err := sess.Navigate(ctx, url); err != nil {
 		b.Close(ctx)
 		return nil, err

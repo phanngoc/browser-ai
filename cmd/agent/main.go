@@ -24,6 +24,7 @@ import (
 	"github.com/phanngoc/browser-ai/internal/browser"
 	"github.com/phanngoc/browser-ai/internal/cdp"
 	"github.com/phanngoc/browser-ai/internal/chrome"
+	"github.com/phanngoc/browser-ai/internal/extbridge"
 	"github.com/phanngoc/browser-ai/internal/jev"
 	"github.com/phanngoc/browser-ai/internal/llmchooser"
 	"github.com/phanngoc/browser-ai/internal/textgen"
@@ -34,6 +35,9 @@ func main() {
 	goal := flag.String("goal", "", "natural-language goal (required)")
 	headless := flag.Bool("headless", false, "launch Chrome headless")
 	attach := flag.String("attach", "", "attach to a running Chrome: 'auto', ws://…, http://host:port, or a user-data-dir")
+	viaExt := flag.Bool("via-extension", false, "drive your real Chrome through the browser-ai bridge extension (extension/)")
+	extPort := flag.Int("ext-port", 9223, "loopback port the extension connects to (with --via-extension)")
+	tabCurrent := flag.Bool("tab", false, "with --via-extension: drive the tab you are on instead of opening a new one (enable it in the extension popup)")
 	keepOpen := flag.Bool("keep-open", false, "leave the tab/browser open after the run")
 	trace := flag.String("trace", "", "write a JSON trace (steps, decisions, timings, requests) to this file")
 	shots := flag.String("screenshots", "", "save a JPEG per step into this directory")
@@ -44,7 +48,7 @@ func main() {
 	chooserModel := flag.String("chooser-model", "", "model for --chooser llm (default google/gemini-2.5-flash-lite; env CHOOSER_MODEL)")
 	chooserBase := flag.String("chooser-base-url", "", "OpenAI-compatible base URL for --chooser llm (env CHOOSER_BASE_URL, else TEXT_MODEL_BASE_URL)")
 	flag.Parse()
-	if *url == "" || *goal == "" {
+	if (*url == "" && !*tabCurrent) || *goal == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -104,16 +108,57 @@ func main() {
 	}
 
 	t0 := time.Now()
-	conn, mode, closeBrowser, err := connect(ctx, *attach, *headless)
-	if err != nil {
-		fatal(err)
+	var err error
+	var conn *cdp.Conn
+	var mode string
+	var closeBrowser func()
+	var br *browser.Browser
+	if *viaExt {
+		conn, mode, closeBrowser, err = connectExtension(ctx, *extPort, *quiet)
+		if err != nil {
+			fatal(err)
+		}
+		if !*keepOpen {
+			defer closeBrowser()
+		}
+		if *tabCurrent {
+			res, err := conn.Call(ctx, "", "Ext.currentTab", nil)
+			if err != nil {
+				fatal(err)
+			}
+			var t struct {
+				TargetID string `json:"targetId"`
+			}
+			_ = json.Unmarshal(res, &t)
+			sess, err := conn.AttachExisting(ctx, t.TargetID)
+			if err != nil {
+				fatal(err)
+			}
+			// Stay on the user's current document unless a start URL was given explicitly.
+			startURL := ""
+			if flagSet("url") {
+				startURL = *url
+			}
+			br, err = browser.NewOnSession(ctx, sess, startURL, browser.Options{})
+			if err != nil {
+				fatal(err)
+			}
+			mode += ", current tab"
+		}
+	} else {
+		conn, mode, closeBrowser, err = connect(ctx, *attach, *headless)
+		if err != nil {
+			fatal(err)
+		}
+		if !*keepOpen {
+			defer closeBrowser()
+		}
 	}
-	if !*keepOpen {
-		defer closeBrowser()
-	}
-	br, err := browser.New(ctx, conn, *url, browser.Options{})
-	if err != nil {
-		fatal(err)
+	if br == nil {
+		br, err = browser.New(ctx, conn, *url, browser.Options{})
+		if err != nil {
+			fatal(err)
+		}
 	}
 	if !*keepOpen {
 		defer br.Close(context.Background())
@@ -163,6 +208,71 @@ func main() {
 	default:
 		os.Exit(1)
 	}
+}
+
+func flagSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// connectExtension starts the loopback bridge and waits for the extension.
+func connectExtension(ctx context.Context, port int, quiet bool) (*cdp.Conn, string, func(), error) {
+	token, err := bridgeToken()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	srv, err := extbridge.Listen(fmt.Sprintf("127.0.0.1:%d", port), token)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "bridge: listening on %s — in the browser-ai extension popup set port %d and token %s, then click Connect\n", srv.Addr, port, token)
+	}
+	hint := time.AfterFunc(3*time.Second, func() {
+		fmt.Fprintln(os.Stderr, "bridge: waiting for the extension to connect… (chrome://extensions → Load unpacked → extension/)")
+	})
+	client, err := srv.Accept(ctx)
+	hint.Stop()
+	if err != nil {
+		srv.Close()
+		return nil, "", nil, err
+	}
+	conn := cdp.NewConn(client)
+	product := "Chrome"
+	if res, err := conn.Call(ctx, "", "Browser.getVersion", nil); err == nil {
+		var v struct {
+			Product string `json:"product"`
+		}
+		_ = json.Unmarshal(res, &v)
+		if v.Product != "" {
+			product = v.Product
+		}
+	}
+	return conn, "via extension v" + client.Hello.Version + " (" + product + ")", func() { conn.Close(); srv.Close() }, nil
+}
+
+// bridgeToken reads or creates ~/.browser-ai/token so the extension is
+// configured once.
+func bridgeToken() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".browser-ai")
+	path := filepath.Join(dir, "token")
+	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) >= 16 {
+		return strings.TrimSpace(string(b)), nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	tok := extbridge.NewToken()
+	return tok, os.WriteFile(path, []byte(tok+"\n"), 0o600)
 }
 
 func connect(ctx context.Context, attach string, headless bool) (*cdp.Conn, string, func(), error) {

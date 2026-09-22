@@ -26,6 +26,9 @@ type Options struct {
 	Args        []string // extra flags
 	Width       int
 	Height      int
+	// LoadExtension loads an unpacked extension directory (and disables all
+	// others), for tests and benchmarks of the extension bridge.
+	LoadExtension string
 }
 
 // Browser is a Chrome we own.
@@ -94,6 +97,14 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 	args = append(args, "--user-data-dir="+b.dir, fmt.Sprintf("--window-size=%d,%d", w, h))
 	if opts.Headless {
 		args = append(args, "--headless=new")
+	}
+	if opts.LoadExtension != "" {
+		abs, err := filepath.Abs(opts.LoadExtension)
+		if err != nil {
+			b.cleanupDir()
+			return nil, err
+		}
+		args = append(args, "--load-extension="+abs, "--disable-extensions-except="+abs)
 	}
 	if opts.UseWS {
 		args = append(args, "--remote-debugging-port=0")

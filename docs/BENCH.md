@@ -14,6 +14,18 @@
 
 Pipe is ~25% lower at p50; both are far below the cost of one snapshot, so transport is not the bottleneck.
 
+Same measurement on 2026-09-22 with Chrome for Testing 153.0.8010.52, adding the extension bridge
+(`bench rtt --headless --via-extension`, n=2000):
+
+| transport | min | p50 | p95 | p99 |
+|---|---|---|---|---|
+| pipe (launched) | 98 µs | **133 µs** | 199 µs | 500 µs |
+| ws (launched, port=0) | 92 µs | **150 µs** | 233 µs | 430 µs |
+| **extension** (`chrome.debugger` hop through the service worker) | 162 µs | **245 µs** | 406 µs | 915 µs |
+
+The extension adds ~0.1 ms per CDP call — about 1 ms per agent step, invisible next to a 330 ms
+decision. Snapshot through the bridge: 24 ms on the fixture page (includes the hop twice).
+
 ### snapshot — Wikipedia Main Page, 1120×780, n=30
 
 | | p50 | p95 |

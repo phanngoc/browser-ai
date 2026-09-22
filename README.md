@@ -65,6 +65,20 @@ Use your own Chrome (profile, cookies, logins) — see [docs/ATTACH.md](docs/ATT
 go run ./cmd/agent --attach auto --url … --goal …
 ```
 
+### Your real Chrome, no debugging port: `--via-extension`
+
+Load `extension/` unpacked once (`chrome://extensions` → Developer mode → Load unpacked), then:
+
+```sh
+go run ./cmd/agent --via-extension --url https://tiki.vn --goal "…"      # new background tab in your Chrome
+go run ./cmd/agent --via-extension --tab --goal "…"                      # the tab you are looking at
+```
+
+The extension connects out to the agent on `127.0.0.1` with a token and relays CDP through
+`chrome.debugger` — the same design as Claude in Chrome and OpenClaw. Everything else in the loop
+is unchanged; the hop costs ~0.1 ms per call. Details, security notes and the "debugging this
+browser" bar: [docs/EXTENSION.md](docs/EXTENSION.md).
+
 ### No TypeSafe key yet? `--chooser llm`
 
 When `TYPESAFE_API_KEY` is empty the agent falls back to `internal/llmchooser`: a general chat
@@ -119,6 +133,7 @@ final    Zürich to London | Google Flights
 | `--url`, `--goal` | required |
 | `--headless` | launch Chrome headless (default: launch a visible window) |
 | `--attach auto\|ws://…\|http://host:port\|<user-data-dir>` | drive a running Chrome instead of launching |
+| `--via-extension [--ext-port 9223] [--tab]` | drive your real Chrome through the bridge extension; `--tab` = the current tab |
 | `--keep-open` | leave the tab open after the run |
 | `--trace run.json` | full trace: steps, every decision with request/answers, timings |
 | `--screenshots dir/` | JPEG after each step, named by elapsed ms |
@@ -302,7 +317,9 @@ cmd/agent        CLI
 cmd/bench        browser-side benchmarks
 internal/cdp     CDP client: header-only decode, flat sessions, bounded event bus
 internal/ws      RFC 6455 client (for --attach)
-internal/chrome  launch (pipe / port=0) and attach (DevToolsActivePort, /json/version)
+internal/chrome  launch (pipe / port=0), attach (DevToolsActivePort, /json/version), load+configure the extension
+internal/extbridge  loopback ws server the extension connects to (a cdp.Transport)
+extension/       MV3 bridge: chrome.debugger ↔ ws, Target.* emulated per tab, popup
 internal/snapshot  snapshot.js + typed Page/Action + fingerprint
 internal/browser Observe / Fresh / Act / Screenshot
 internal/jev     action space, questions, TypeSafe client, validation
